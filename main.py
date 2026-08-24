@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from config import CHECK_INTERVAL_SECONDS, SYMBOL, INTERVAL
 from market_data import fetch_candles
 from strategy import analyze_market
+from storage import init_db, save_analysis, count_records
 
 
 def format_result(result):
@@ -25,14 +26,33 @@ def format_result(result):
 
 
 def main():
+    init_db()
+
     print("Forex analysis engine started", flush=True)
+    print(f"Stored records: {count_records()}", flush=True)
 
     while True:
         try:
             candles = fetch_candles()
             result = analyze_market(candles)
 
+            created_at = datetime.now(timezone.utc).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+
             print(format_result(result), flush=True)
+
+            save_analysis(
+                created_at=created_at,
+                symbol=SYMBOL,
+                interval=INTERVAL,
+                result=result,
+            )
+
+            print(
+                f"Saved to database | Total records: {count_records()}",
+                flush=True,
+            )
 
         except Exception as error:
             print(f"ERROR: {error}", flush=True)
