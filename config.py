@@ -14,3 +14,12 @@ CANDLE_LIMIT = 120
 
 # Проверяем рынок раз в 5 минут
 CHECK_INTERVAL_SECONDS = 300
+# Strategy filters
+MIN_EMA_DISTANCE_ATR = 0.15
+MIN_ATR = 0.00010
+
+RSI_BUY_MIN = 52
+RSI_BUY_MAX = 68
+
+RSI_SELL_MIN = 32
+RSI_SELL_MAX = 48
