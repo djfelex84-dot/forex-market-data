@@ -1,48 +1,41 @@
-import os
 import time
-import requests
 from datetime import datetime, timezone
 
-API_KEY = os.getenv("TWELVE_DATA_API_KEY")
+from config import CHECK_INTERVAL_SECONDS, SYMBOL, INTERVAL
+from market_data import fetch_candles
+from strategy import analyze_market
 
-URL = "https://api.twelvedata.com/time_series"
 
-def get_candles():
-    params = {
-        "symbol": "EUR/USD",
-        "interval": "5min",
-        "outputsize": 5,
-        "apikey": API_KEY,
-    }
+def format_result(result):
+    return (
+        f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}] "
+        f"{SYMBOL} {INTERVAL} | "
+        f"Candle={result['datetime']} | "
+        f"Close={result['close']:.5f} | "
+        f"EMA20={result['ema_fast']:.5f} | "
+        f"EMA50={result['ema_slow']:.5f} | "
+        f"RSI14={result['rsi']:.2f} | "
+        f"ATR14={result['atr']:.5f} | "
+        f"Trend={result['trend']} | "
+        f"Signal={result['signal']} | "
+        f"Reason={result['reason']}"
+    )
 
-    response = requests.get(URL, params=params, timeout=15)
-    response.raise_for_status()
 
-    data = response.json()
+def main():
+    print("Forex analysis engine started", flush=True)
 
-    if data.get("status") == "error":
-        raise RuntimeError(data.get("message", "Twelve Data API error"))
+    while True:
+        try:
+            candles = fetch_candles()
+            result = analyze_market(candles)
+            print(format_result(result), flush=True)
 
-    return data["values"]
+        except Exception as error:
+            print(f"ERROR: {error}", flush=True)
 
-while True:
-    try:
-        candles = get_candles()
-        latest = candles[0]
+        time.sleep(CHECK_INTERVAL_SECONDS)
 
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-        print(
-            f"[{now}] EUR/USD 5m | "
-            f"time={latest['datetime']} "
-            f"O={latest['open']} "
-            f"H={latest['high']} "
-            f"L={latest['low']} "
-            f"C={latest['close']}",
-            flush=True,
-        )
-
-    except Exception as e:
-        print(f"ERROR: {e}", flush=True)
-
-    time.sleep(300)
+if __name__ == "__main__":
+    main()
