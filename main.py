@@ -16,8 +16,10 @@ def format_result(result):
         f"EMA50={result['ema_slow']:.5f} | "
         f"RSI14={result['rsi']:.2f} | "
         f"ATR14={result['atr']:.5f} | "
+        f"EMA-distance={result['ema_distance_atr']:.2f} ATR | "
         f"Trend={result['trend']} | "
         f"Signal={result['signal']} | "
+        f"Confidence={result['confidence']}% | "
         f"Reason={result['reason']}"
     )
 
@@ -29,6 +31,7 @@ def main():
         try:
             candles = fetch_candles()
             result = analyze_market(candles)
+
             print(format_result(result), flush=True)
 
         except Exception as error:
