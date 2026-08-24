@@ -21,7 +21,7 @@ from evaluator import evaluate_pending_signals
 
 # Небольшая задержка после закрытия свечи,
 # чтобы источник данных успел обновиться.
-CANDLE_CLOSE_DELAY_SECONDS = 5
+CANDLE_CLOSE_DELAY_SECONDS = 15
 
 
 def interval_to_seconds(interval):
