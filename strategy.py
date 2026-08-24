@@ -17,10 +17,18 @@ from indicators import ema, rsi, atr
 def analyze_market(candles):
     closes = [candle["close"] for candle in candles]
 
+    # Current indicators
     ema_fast = ema(closes, EMA_FAST)
     ema_slow = ema(closes, EMA_SLOW)
     rsi_value = rsi(closes, RSI_PERIOD)
     atr_value = atr(candles, ATR_PERIOD)
+
+    # Previous EMA values to determine slope
+    ema_fast_prev = ema(closes[:-1], EMA_FAST)
+    ema_slow_prev = ema(closes[:-1], EMA_SLOW)
+
+    ema_fast_slope = ema_fast - ema_fast_prev
+    ema_slow_slope = ema_slow - ema_slow_prev
 
     latest = candles[-1]
     close = latest["close"]
@@ -32,7 +40,7 @@ def analyze_market(candles):
     else:
         ema_distance_atr = 0
 
-    # Trend
+    # Main trend
     if ema_fast > ema_slow:
         trend = "UP"
     elif ema_fast < ema_slow:
@@ -40,23 +48,35 @@ def analyze_market(candles):
     else:
         trend = "FLAT"
 
+    # EMA direction
+    if ema_fast_slope > 0 and ema_slow_slope > 0:
+        ema_direction = "UP"
+    elif ema_fast_slope < 0 and ema_slow_slope < 0:
+        ema_direction = "DOWN"
+    else:
+        ema_direction = "MIXED"
+
     signal = "WAIT"
     reasons = []
     score = 0
 
     # -------------------------
-    # Market quality
+    # Volatility
     # -------------------------
 
     if atr_value >= MIN_ATR:
-        score += 15
+        score += 10
         reasons.append("volatility OK")
     else:
         reasons.append("volatility too low")
 
+    # -------------------------
+    # EMA separation
+    # -------------------------
+
     if ema_distance_atr >= MIN_EMA_DISTANCE_ATR:
-        score += 20
-        reasons.append("trend separation OK")
+        score += 15
+        reasons.append("EMA separation OK")
     else:
         reasons.append("weak EMA separation")
 
@@ -65,54 +85,74 @@ def analyze_market(candles):
     # -------------------------
 
     if trend == "UP":
-        score += 25
+        score += 20
+
+        if ema_direction == "UP":
+            score += 15
+            reasons.append("EMAs rising")
+        else:
+            reasons.append("EMA slope not bullish")
+
+        if close > ema_fast and close > ema_slow:
+            score += 15
+            reasons.append("price above both EMAs")
+        else:
+            reasons.append("price not above both EMAs")
 
         if RSI_BUY_MIN <= rsi_value <= RSI_BUY_MAX:
             score += 25
-
-            if (
-                atr_value >= MIN_ATR
-                and ema_distance_atr >= MIN_EMA_DISTANCE_ATR
-            ):
-                signal = "BUY"
-                reasons.append("bullish EMA structure")
-                reasons.append("RSI confirms bullish momentum")
+            reasons.append("RSI confirms BUY")
         else:
             reasons.append("RSI does not confirm BUY")
+
+        if (
+            atr_value >= MIN_ATR
+            and ema_distance_atr >= MIN_EMA_DISTANCE_ATR
+            and ema_direction == "UP"
+            and close > ema_fast
+            and close > ema_slow
+            and RSI_BUY_MIN <= rsi_value <= RSI_BUY_MAX
+        ):
+            signal = "BUY"
 
     # -------------------------
     # SELL analysis
     # -------------------------
 
     elif trend == "DOWN":
-        score += 25
+        score += 20
+
+        if ema_direction == "DOWN":
+            score += 15
+            reasons.append("EMAs falling")
+        else:
+            reasons.append("EMA slope not bearish")
+
+        if close < ema_fast and close < ema_slow:
+            score += 15
+            reasons.append("price below both EMAs")
+        else:
+            reasons.append("price not below both EMAs")
 
         if RSI_SELL_MIN <= rsi_value <= RSI_SELL_MAX:
             score += 25
-
-            if (
-                atr_value >= MIN_ATR
-                and ema_distance_atr >= MIN_EMA_DISTANCE_ATR
-            ):
-                signal = "SELL"
-                reasons.append("bearish EMA structure")
-                reasons.append("RSI confirms bearish momentum")
+            reasons.append("RSI confirms SELL")
         else:
             reasons.append("RSI does not confirm SELL")
+
+        if (
+            atr_value >= MIN_ATR
+            and ema_distance_atr >= MIN_EMA_DISTANCE_ATR
+            and ema_direction == "DOWN"
+            and close < ema_fast
+            and close < ema_slow
+            and RSI_SELL_MIN <= rsi_value <= RSI_SELL_MAX
+        ):
+            signal = "SELL"
 
     else:
         reasons.append("no clear trend")
 
-    # Price position adds confirmation
-    if signal == "BUY" and close > ema_fast:
-        score += 15
-        reasons.append("price above fast EMA")
-
-    elif signal == "SELL" and close < ema_fast:
-        score += 15
-        reasons.append("price below fast EMA")
-
-    # Cap score
     confidence = min(score, 100)
 
     return {
@@ -120,6 +160,9 @@ def analyze_market(candles):
         "close": close,
         "ema_fast": ema_fast,
         "ema_slow": ema_slow,
+        "ema_fast_slope": ema_fast_slope,
+        "ema_slow_slope": ema_slow_slope,
+        "ema_direction": ema_direction,
         "ema_distance_atr": ema_distance_atr,
         "rsi": rsi_value,
         "atr": atr_value,
