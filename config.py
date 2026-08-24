@@ -11,9 +11,8 @@ RSI_PERIOD = 14
 ATR_PERIOD = 14
 
 CANDLE_LIMIT = 120
-
-# Проверяем рынок раз в 5 минут
 CHECK_INTERVAL_SECONDS = 300
+
 # Strategy filters
 MIN_EMA_DISTANCE_ATR = 0.15
 MIN_ATR = 0.00010
