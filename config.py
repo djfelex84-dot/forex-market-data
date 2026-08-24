@@ -1,0 +1,16 @@
+import os
+
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY")
+
+SYMBOL = "EUR/USD"
+INTERVAL = "5min"
+
+EMA_FAST = 20
+EMA_SLOW = 50
+RSI_PERIOD = 14
+ATR_PERIOD = 14
+
+CANDLE_LIMIT = 120
+
+# Проверяем рынок раз в 5 минут
+CHECK_INTERVAL_SECONDS = 300
