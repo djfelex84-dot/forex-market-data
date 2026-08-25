@@ -91,6 +91,10 @@ from user_subscriptions import (
     init_user_subscription_tables,
 )
 
+from telegram_user_bot import (
+    start_user_bot_polling,
+)
+
 
 CANDLE_CLOSE_DELAY_SECONDS = 15
 
@@ -1034,6 +1038,17 @@ def main():
         "MAE/MFE tracking: enabled",
         flush=True,
     )
+
+    try:
+        start_user_bot_polling()
+
+    except Exception as error:
+        print(
+            "USER BOT START ERROR | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
 
     try:
         send_vip_connection_test_once()
