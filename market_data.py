@@ -1,5 +1,10 @@
 import requests
-from datetime import datetime, timedelta, timezone
+
+from datetime import (
+    datetime,
+    timedelta,
+    timezone,
+)
 
 from config import (
     TWELVE_DATA_API_KEY,
@@ -8,38 +13,74 @@ from config import (
     CANDLE_LIMIT,
 )
 
-API_URL = "https://api.twelvedata.com/time_series"
+
+API_URL = (
+    "https://api.twelvedata.com/"
+    "time_series"
+)
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
-def interval_to_timedelta(interval):
+def interval_to_timedelta(
+    interval
+):
     if interval.endswith("min"):
-        minutes = int(interval.replace("min", ""))
-        return timedelta(minutes=minutes)
+        minutes = int(
+            interval.replace(
+                "min",
+                "",
+            )
+        )
+
+        return timedelta(
+            minutes=minutes
+        )
 
     if interval.endswith("h"):
-        hours = int(interval.replace("h", ""))
-        return timedelta(hours=hours)
+        hours = int(
+            interval.replace(
+                "h",
+                "",
+            )
+        )
+
+        return timedelta(
+            hours=hours
+        )
 
     raise ValueError(
-        f"Unsupported interval: {interval}"
+        f"Unsupported interval: "
+        f"{interval}"
     )
 
 
-INTERVAL_DELTA = interval_to_timedelta(
-    INTERVAL
+INTERVAL_DELTA = (
+    interval_to_timedelta(
+        INTERVAL
+    )
 )
 
 
-def fetch_candles():
+def fetch_candles(
+    symbol=None
+):
     if not TWELVE_DATA_API_KEY:
         raise RuntimeError(
-            "TWELVE_DATA_API_KEY is not set"
+            "TWELVE_DATA_API_KEY "
+            "is not set"
         )
 
+    # Пока сохраняем совместимость
+    # со старым кодом.
+    #
+    # Если символ не передан,
+    # будет использован EUR/USD.
+    if symbol is None:
+        symbol = SYMBOL
+
     params = {
-        "symbol": SYMBOL,
+        "symbol": symbol,
         "interval": INTERVAL,
         "outputsize": CANDLE_LIMIT,
         "timezone": "UTC",
@@ -56,59 +97,93 @@ def fetch_candles():
 
     data = response.json()
 
-    if data.get("status") == "error":
+    if data.get(
+        "status"
+    ) == "error":
         raise RuntimeError(
             data.get(
                 "message",
-                "Twelve Data API error",
+                (
+                    "Twelve Data "
+                    "API error"
+                ),
             )
         )
 
-    values = data.get("values")
+    values = data.get(
+        "values"
+    )
 
     if not values:
         raise RuntimeError(
-            "No candle data received"
+            "No candle data "
+            f"received for {symbol}"
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(
+        timezone.utc
+    )
 
     candles = []
 
     for candle in values:
-        candle_open = datetime.strptime(
-            candle["datetime"],
-            TIME_FORMAT,
-        ).replace(
-            tzinfo=timezone.utc
+        candle_open = (
+            datetime.strptime(
+                candle["datetime"],
+                TIME_FORMAT,
+            ).replace(
+                tzinfo=timezone.utc
+            )
         )
 
         candle_close = (
-            candle_open + INTERVAL_DELTA
+            candle_open
+            + INTERVAL_DELTA
         )
 
-        # Используем только реально
-        # закрытые свечи.
+        # Используем только
+        # действительно закрытые
+        # свечи.
         if candle_close > now:
             continue
 
         candles.append(
             {
-                "datetime": candle["datetime"],
-                "open": float(candle["open"]),
-                "high": float(candle["high"]),
-                "low": float(candle["low"]),
-                "close": float(candle["close"]),
+                "datetime":
+                    candle["datetime"],
+
+                "open":
+                    float(
+                        candle["open"]
+                    ),
+
+                "high":
+                    float(
+                        candle["high"]
+                    ),
+
+                "low":
+                    float(
+                        candle["low"]
+                    ),
+
+                "close":
+                    float(
+                        candle["close"]
+                    ),
             }
         )
 
     if not candles:
         raise RuntimeError(
-            "No closed candles available"
+            "No closed candles "
+            f"available for {symbol}"
         )
 
-    # Twelve Data отдаёт сначала новые.
-    # Нам для индикаторов нужны:
+    # Twelve Data отдаёт
+    # сначала самые новые свечи.
+    #
+    # Индикаторам нужен порядок:
     # старые -> новые.
     candles.reverse()
 
