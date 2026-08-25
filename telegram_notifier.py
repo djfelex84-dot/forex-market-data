@@ -23,6 +23,10 @@ CHANNEL_ID = os.getenv(
     "TELEGRAM_CHANNEL_ID"
 )
 
+VIP_CHANNEL_ID = os.getenv(
+    "TELEGRAM_VIP_CHANNEL_ID"
+)
+
 SEND_MESSAGE_URL = (
     f"https://api.telegram.org/"
     f"bot{BOT_TOKEN}/sendMessage"
@@ -66,8 +70,11 @@ def interval_minutes(interval):
     )
 
 
-def send_message(text):
-    if not BOT_TOKEN or not CHANNEL_ID:
+def send_message_to_channel(
+    channel_id,
+    text,
+):
+    if not BOT_TOKEN or not channel_id:
         print(
             "TELEGRAM WARNING: "
             "token or channel ID is missing",
@@ -80,7 +87,7 @@ def send_message(text):
             SEND_MESSAGE_URL,
             json={
                 "chat_id":
-                    CHANNEL_ID,
+                    channel_id,
 
                 "text":
                     text,
@@ -116,11 +123,12 @@ def send_message(text):
         return False
 
 
-def send_photo(
+def send_photo_to_channel(
+    channel_id,
     caption,
     image_buffer,
 ):
-    if not BOT_TOKEN or not CHANNEL_ID:
+    if not BOT_TOKEN or not channel_id:
         print(
             "TELEGRAM WARNING: "
             "token or channel ID is missing",
@@ -133,7 +141,7 @@ def send_photo(
             SEND_PHOTO_URL,
             data={
                 "chat_id":
-                    CHANNEL_ID,
+                    channel_id,
 
                 "caption":
                     caption,
@@ -171,6 +179,42 @@ def send_photo(
             flush=True,
         )
         return False
+
+
+def send_message(text):
+    return send_message_to_channel(
+        CHANNEL_ID,
+        text,
+    )
+
+
+def send_vip_message(text):
+    return send_message_to_channel(
+        VIP_CHANNEL_ID,
+        text,
+    )
+
+
+def send_photo(
+    caption,
+    image_buffer,
+):
+    return send_photo_to_channel(
+        CHANNEL_ID,
+        caption,
+        image_buffer,
+    )
+
+
+def send_vip_photo(
+    caption,
+    image_buffer,
+):
+    return send_photo_to_channel(
+        VIP_CHANNEL_ID,
+        caption,
+        image_buffer,
+    )
 
 
 def get_direction_icon(signal):
