@@ -82,6 +82,11 @@ from research_15m import (
     process_15m_research,
 )
 
+from research_15m_trades import (
+    init_15m_trade_tables,
+    process_15m_trade_research,
+)
+
 
 CANDLE_CLOSE_DELAY_SECONDS = 15
 
@@ -578,10 +583,24 @@ def process_research_15m(
     candles,
 ):
     try:
-        process_15m_research(
-            symbol=symbol,
-            five_minute_candles=candles,
+        research_result = (
+            process_15m_research(
+                symbol=symbol,
+                five_minute_candles=candles,
+            )
         )
+
+        if research_result is None:
+            return None
+
+        process_15m_trade_research(
+            symbol=symbol,
+            analysis_result=(
+                research_result
+            ),
+        )
+
+        return research_result
 
     except Exception as error:
         print(
@@ -591,6 +610,8 @@ def process_research_15m(
             f"{error}",
             flush=True,
         )
+
+        return None
 
 
 def analyze_symbol(
@@ -775,8 +796,11 @@ def analyze_symbol(
     #
     # No extra Twelve Data request.
     #
-    # Does not publish Telegram
-    # signals.
+    # After enough candles are
+    # available, 15m virtual trades
+    # are evaluated separately.
+    #
+    # No Telegram publication.
 
     process_research_15m(
         symbol,
@@ -907,6 +931,8 @@ def main():
 
     init_15m_research_tables()
 
+    init_15m_trade_tables()
+
     print(
         "Multi-market analysis engine started",
         flush=True,
@@ -999,6 +1025,12 @@ def main():
     print(
         "15m research: enabled, "
         "built from existing 5min data",
+        flush=True,
+    )
+
+    print(
+        "15m trade research: "
+        "virtual execution enabled",
         flush=True,
     )
 
