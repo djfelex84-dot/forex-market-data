@@ -5,50 +5,43 @@ from datetime import (
     timezone,
 )
 
-
 from config import (
     SYMBOL,
     INTERVAL,
 )
 
-
 from market_data import (
     fetch_candles,
 )
-
 
 from strategy import (
     analyze_market,
 )
 
-
 from storage import (
     init_db,
-
     save_analysis,
-
     count_records,
     count_signal_events,
-
     create_signal_event_if_new,
-
     get_outcome_summary,
-
     count_virtual_trades,
     count_open_virtual_trades,
-
     get_trade_summary,
 )
-
 
 from evaluator import (
     evaluate_pending_signals,
 )
 
-
 from trade_manager import (
     ensure_virtual_trades,
     evaluate_open_trades,
+)
+
+from telegram_notifier import (
+    send_trade_opened,
+    send_trade_closed,
 )
 
 
@@ -184,6 +177,10 @@ def print_new_virtual_trades(
             flush=True,
         )
 
+        send_trade_opened(
+            trade
+        )
+
 
 def print_trade_results(
     results
@@ -236,6 +233,10 @@ def print_trade_results(
                 f"{trade['candle_time']}",
                 flush=True,
             )
+
+        send_trade_closed(
+            trade
+        )
 
 
 def print_trade_summary():
@@ -343,7 +344,6 @@ def print_outcome_summary():
 
 def analyze_once():
 
-    # ONE Twelve Data request.
     candles = (
         fetch_candles()
     )
@@ -461,9 +461,6 @@ def analyze_once():
                 flush=True,
             )
 
-    # Create V2 trade only
-    # for signal events that do not
-    # already have a trade.
     new_trades = (
         ensure_virtual_trades()
     )
