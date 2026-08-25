@@ -55,6 +55,11 @@ from weekly_report import (
     send_weekly_report_if_due,
 )
 
+from market_overview import (
+    init_market_overview_table,
+    process_market_overview,
+)
+
 from economic_calendar import (
     init_economic_calendar,
     process_economic_calendar,
@@ -689,6 +694,17 @@ def analyze_once():
         )
 
     try:
+        process_market_overview()
+
+    except Exception as error:
+        print(
+            "MARKET OVERVIEW ERROR | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+    try:
         process_economic_calendar()
 
     except Exception as error:
@@ -729,6 +745,8 @@ def main():
     init_daily_report_table()
 
     init_weekly_report_table()
+
+    init_market_overview_table()
 
     init_economic_calendar()
 
@@ -783,6 +801,13 @@ def main():
     print(
         "Weekly report: "
         "Monday 00:10 UTC for previous week -> "
+        "Free channel",
+        flush=True,
+    )
+
+    print(
+        "Morning overview: "
+        "weekdays 07:05-09:00 UTC -> "
         "Free channel",
         flush=True,
     )
