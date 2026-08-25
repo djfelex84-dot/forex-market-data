@@ -77,6 +77,11 @@ from health_monitor import (
     process_health_monitor,
 )
 
+from research_15m import (
+    init_15m_research_tables,
+    process_15m_research,
+)
+
 
 CANDLE_CLOSE_DELAY_SECONDS = 15
 
@@ -131,6 +136,7 @@ def send_vip_connection_test_once():
             "connection test already confirmed",
             flush=True,
         )
+
         return True
 
     message = (
@@ -151,6 +157,7 @@ def send_vip_connection_test_once():
             "Will retry after next restart",
             flush=True,
         )
+
         return False
 
     try:
@@ -523,15 +530,21 @@ def print_outcome_summary(
     )
 
     for row in summary:
-        total = row["total"]
+        total = row[
+            "total"
+        ]
 
         wins = (
-            row["wins"]
+            row[
+                "wins"
+            ]
             or 0
         )
 
         win_rate = (
-            wins / total * 100
+            wins
+            / total
+            * 100
             if total
             else 0
         )
@@ -556,6 +569,26 @@ def print_outcome_summary(
 
             f"AvgPips="
             f"{row['avg_pips'] or 0:.2f}",
+            flush=True,
+        )
+
+
+def process_research_15m(
+    symbol,
+    candles,
+):
+    try:
+        process_15m_research(
+            symbol=symbol,
+            five_minute_candles=candles,
+        )
+
+    except Exception as error:
+        print(
+            "15M RESEARCH ERROR | "
+            f"{symbol} | "
+            f"{type(error).__name__}: "
+            f"{error}",
             flush=True,
         )
 
@@ -733,6 +766,23 @@ def analyze_symbol(
             symbol
         )
 
+    # =========================
+    # 15 MINUTE RESEARCH
+    # =========================
+    #
+    # Uses the same already-fetched
+    # 5-minute candles.
+    #
+    # No extra Twelve Data request.
+    #
+    # Does not publish Telegram
+    # signals.
+
+    process_research_15m(
+        symbol,
+        candles,
+    )
+
 
 def analyze_once():
     for symbol in SYMBOLS:
@@ -855,6 +905,8 @@ def main():
 
     init_health_monitor_table()
 
+    init_15m_research_tables()
+
     print(
         "Multi-market analysis engine started",
         flush=True,
@@ -939,8 +991,14 @@ def main():
     )
 
     print(
-        "VIP channel: configured, "
-        "live signals disabled",
+        "VIP channel: "
+        "signal mirror enabled",
+        flush=True,
+    )
+
+    print(
+        "15m research: enabled, "
+        "built from existing 5min data",
         flush=True,
     )
 
