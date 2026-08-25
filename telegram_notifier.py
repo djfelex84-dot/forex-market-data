@@ -105,7 +105,8 @@ def send_message_to_channel(
 
         if not data.get("ok"):
             print(
-                f"TELEGRAM ERROR: "
+                "TELEGRAM ERROR | "
+                f"Channel={channel_id} | "
                 f"{data}",
                 flush=True,
             )
@@ -115,7 +116,8 @@ def send_message_to_channel(
 
     except Exception as error:
         print(
-            f"TELEGRAM ERROR: "
+            "TELEGRAM ERROR | "
+            f"Channel={channel_id} | "
             f"{type(error).__name__}: "
             f"{error}",
             flush=True,
@@ -137,6 +139,8 @@ def send_photo_to_channel(
         return False
 
     try:
+        image_buffer.seek(0)
+
         response = requests.post(
             SEND_PHOTO_URL,
             data={
@@ -163,7 +167,8 @@ def send_photo_to_channel(
 
         if not data.get("ok"):
             print(
-                f"TELEGRAM ERROR: "
+                "TELEGRAM ERROR | "
+                f"Channel={channel_id} | "
                 f"{data}",
                 flush=True,
             )
@@ -173,7 +178,8 @@ def send_photo_to_channel(
 
     except Exception as error:
         print(
-            f"TELEGRAM ERROR: "
+            "TELEGRAM ERROR | "
+            f"Channel={channel_id} | "
             f"{type(error).__name__}: "
             f"{error}",
             flush=True,
@@ -389,6 +395,9 @@ def send_trade_opened(
 
     image_buffer = None
 
+    test_sent = False
+    vip_sent = False
+
     try:
         image_buffer = (
             create_trade_chart(
@@ -400,20 +409,47 @@ def send_trade_opened(
             )
         )
 
-        sent = send_photo(
+        # =========================
+        # TEST CHANNEL
+        # =========================
+
+        test_sent = send_photo(
             caption=text,
             image_buffer=image_buffer,
         )
 
-        if sent:
-            return True
+        if not test_sent:
+            print(
+                "TELEGRAM TEST WARNING: "
+                "photo send failed, "
+                "using text fallback",
+                flush=True,
+            )
 
-        print(
-            "TELEGRAM CHART WARNING: "
-            "photo send failed, "
-            "using text fallback",
-            flush=True,
+            test_sent = send_message(
+                text
+            )
+
+        # =========================
+        # VIP CHANNEL
+        # =========================
+
+        vip_sent = send_vip_photo(
+            caption=text,
+            image_buffer=image_buffer,
         )
+
+        if not vip_sent:
+            print(
+                "TELEGRAM VIP WARNING: "
+                "photo send failed, "
+                "using text fallback",
+                flush=True,
+            )
+
+            vip_sent = send_vip_message(
+                text
+            )
 
     except Exception as error:
         print(
@@ -423,16 +459,43 @@ def send_trade_opened(
             flush=True,
         )
 
+        if not test_sent:
+            test_sent = send_message(
+                text
+            )
+
+        if not vip_sent:
+            vip_sent = send_vip_message(
+                text
+            )
+
     finally:
         if image_buffer:
             image_buffer.close()
 
-    return send_message(
-        text
+    if test_sent:
+        print(
+            "SIGNAL SENT | "
+            f"{trade['symbol']} | "
+            "TEST",
+            flush=True,
+        )
+
+    if vip_sent:
+        print(
+            "SIGNAL SENT | "
+            f"{trade['symbol']} | "
+            "VIP MIRROR",
+            flush=True,
+        )
+
+    return (
+        test_sent
+        and vip_sent
     )
 
 
-def send_trade_closed(
+def build_trade_closed_text(
     trade
 ):
     result = trade[
@@ -470,7 +533,7 @@ def send_trade_closed(
         title = "RESULT UNCLEAR"
 
     if result == "AMBIGUOUS":
-        text = (
+        return (
             f"{icon} <b>{title}</b>\n"
             "\n"
             f"{direction_icon} "
@@ -493,48 +556,82 @@ def send_trade_closed(
             "simulated execution</i>"
         )
 
+    net_pips = (
+        trade[
+            "net_pips"
+        ]
+    )
+
+    r_value = (
+        trade[
+            "r"
+        ]
+    )
+
+    if net_pips > 0:
+        pnl_icon = "🟢"
+
+    elif net_pips < 0:
+        pnl_icon = "🔴"
+
     else:
-        net_pips = (
-            trade[
-                "net_pips"
-            ]
+        pnl_icon = "⚪"
+
+    return (
+        f"{icon} <b>{title}</b>\n"
+        "\n"
+        f"{direction_icon} "
+        f"<b>{trade['symbol']} · "
+        f"{trade['signal']}</b>\n"
+        "\n"
+        f"{pnl_icon} Net result: "
+        f"<b>{net_pips:+.2f} "
+        f"pips</b>\n"
+        f"📊 Result: "
+        f"<b>{r_value:+.2f}R</b>\n"
+        "\n"
+        f"🕒 Result confirmed: "
+        f"<b>{result_confirmed}</b>\n"
+        "\n"
+        "<i>Test signal · "
+        "simulated execution</i>"
+    )
+
+
+def send_trade_closed(
+    trade
+):
+    text = (
+        build_trade_closed_text(
+            trade
         )
+    )
 
-        r_value = (
-            trade[
-                "r"
-            ]
-        )
-
-        if net_pips > 0:
-            pnl_icon = "🟢"
-
-        elif net_pips < 0:
-            pnl_icon = "🔴"
-
-        else:
-            pnl_icon = "⚪"
-
-        text = (
-            f"{icon} <b>{title}</b>\n"
-            "\n"
-            f"{direction_icon} "
-            f"<b>{trade['symbol']} · "
-            f"{trade['signal']}</b>\n"
-            "\n"
-            f"{pnl_icon} Net result: "
-            f"<b>{net_pips:+.2f} "
-            f"pips</b>\n"
-            f"📊 Result: "
-            f"<b>{r_value:+.2f}R</b>\n"
-            "\n"
-            f"🕒 Result confirmed: "
-            f"<b>{result_confirmed}</b>\n"
-            "\n"
-            "<i>Test signal · "
-            "simulated execution</i>"
-        )
-
-    return send_message(
+    test_sent = send_message(
         text
+    )
+
+    vip_sent = send_vip_message(
+        text
+    )
+
+    if test_sent:
+        print(
+            "RESULT SENT | "
+            f"{trade['symbol']} | "
+            "TEST",
+            flush=True,
+        )
+
+    if vip_sent:
+        print(
+            "RESULT SENT | "
+            f"{trade['symbol']} | "
+            "VIP MIRROR",
+            flush=True,
+        )
+
+    return (
+        test_sent
+        and vip_sent
     )
