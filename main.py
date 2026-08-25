@@ -548,10 +548,6 @@ def analyze_once():
                 flush=True,
             )
 
-    # These are channel services,
-    # so they run once per cycle,
-    # not once for every symbol.
-
     try:
         send_daily_report_if_due()
 
@@ -648,7 +644,7 @@ def main():
 
     print(
         "Daily report: "
-        "23:55 UTC -> "
+        "00:05 UTC for previous day -> "
         "Free channel",
         flush=True,
     )
