@@ -28,6 +28,7 @@ from storage import (
     count_virtual_trades,
     count_open_virtual_trades,
     get_trade_summary,
+    get_excursion_summary,
 )
 
 from evaluator import (
@@ -92,6 +93,15 @@ INTERVAL_SECONDS = (
         INTERVAL
     )
 )
+
+
+def format_optional_pips(
+    value
+):
+    if value is None:
+        return "n/a"
+
+    return f"{float(value):.2f}"
 
 
 def format_result(
@@ -199,6 +209,18 @@ def print_trade_results(
     results
 ):
     for trade in results:
+        mae = format_optional_pips(
+            trade.get(
+                "mae_pips"
+            )
+        )
+
+        mfe = format_optional_pips(
+            trade.get(
+                "mfe_pips"
+            )
+        )
+
         if (
             trade["result"]
             == "AMBIGUOUS"
@@ -214,6 +236,12 @@ def print_trade_results(
                 f"{trade['signal']} | "
 
                 "AMBIGUOUS | "
+
+                f"MAE="
+                f"{mae} pips | "
+
+                f"MFE="
+                f"{mfe} pips | "
 
                 f"Candle="
                 f"{trade['candle_time']}",
@@ -241,6 +269,12 @@ def print_trade_results(
 
                 f"R="
                 f"{trade['r']:+.2f}R | "
+
+                f"MAE="
+                f"{mae} pips | "
+
+                f"MFE="
+                f"{mfe} pips | "
 
                 f"Candle="
                 f"{trade['candle_time']}",
@@ -304,6 +338,81 @@ def print_trade_summary(
         f"{summary['avg_r'] or 0:+.2f}R",
         flush=True,
     )
+
+
+def print_excursion_summary(
+    symbol,
+):
+    summary = (
+        get_excursion_summary(
+            symbol=symbol
+        )
+    )
+
+    if not summary:
+        return
+
+    print(
+        f"----- {symbol} "
+        f"MAE / MFE RESEARCH -----",
+        flush=True,
+    )
+
+    for row in summary:
+        avg_mae = (
+            format_optional_pips(
+                row[
+                    "avg_mae_pips"
+                ]
+            )
+        )
+
+        avg_mfe = (
+            format_optional_pips(
+                row[
+                    "avg_mfe_pips"
+                ]
+            )
+        )
+
+        max_mae = (
+            format_optional_pips(
+                row[
+                    "max_mae_pips"
+                ]
+            )
+        )
+
+        max_mfe = (
+            format_optional_pips(
+                row[
+                    "max_mfe_pips"
+                ]
+            )
+        )
+
+        print(
+            f"{row['exit_reason']} | "
+
+            f"Closed="
+            f"{row['total_closed'] or 0} | "
+
+            f"Tracked="
+            f"{row['tracked'] or 0} | "
+
+            f"AvgMAE="
+            f"{avg_mae} pips | "
+
+            f"AvgMFE="
+            f"{avg_mfe} pips | "
+
+            f"MaxMAE="
+            f"{max_mae} pips | "
+
+            f"MaxMFE="
+            f"{max_mfe} pips",
+            flush=True,
+        )
 
 
 def print_outcome_summary(
@@ -495,6 +604,10 @@ def analyze_symbol(
             symbol
         )
 
+        print_excursion_summary(
+            symbol
+        )
+
     outcomes = (
         evaluate_pending_signals(
             candles,
@@ -653,6 +766,11 @@ def main():
         "Economic calendar: "
         "High Impact -> "
         "Free channel",
+        flush=True,
+    )
+
+    print(
+        "MAE/MFE tracking: enabled",
         flush=True,
     )
 
