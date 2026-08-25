@@ -3,7 +3,11 @@ from datetime import datetime, timedelta
 
 import requests
 
-from config import SYMBOL, INTERVAL
+from config import SYMBOL
+
+from trade_chart import (
+    create_trade_chart,
+)
 
 
 BOT_TOKEN = os.getenv(
@@ -14,8 +18,16 @@ CHANNEL_ID = os.getenv(
     "TELEGRAM_CHANNEL_ID"
 )
 
-API_URL = (
-    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+SEND_MESSAGE_URL = (
+    f"https://api.telegram.org/"
+    f"bot{BOT_TOKEN}/sendMessage"
+    if BOT_TOKEN
+    else None
+)
+
+SEND_PHOTO_URL = (
+    f"https://api.telegram.org/"
+    f"bot{BOT_TOKEN}/sendPhoto"
     if BOT_TOKEN
     else None
 )
@@ -44,13 +56,57 @@ def interval_minutes(interval):
         )
 
     raise ValueError(
-        f"Unsupported interval: {interval}"
+        f"Unsupported interval: "
+        f"{interval}"
     )
 
 
-def send_message(
-    text,
-    reply_markup=None,
+def send_message(text):
+    if not BOT_TOKEN or not CHANNEL_ID:
+        print(
+            "TELEGRAM WARNING: "
+            "token or channel ID is missing",
+            flush=True,
+        )
+        return False
+
+    try:
+        response = requests.post(
+            SEND_MESSAGE_URL,
+            json={
+                "chat_id": CHANNEL_ID,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=15,
+        )
+
+        data = response.json()
+
+        if not data.get("ok"):
+            print(
+                f"TELEGRAM ERROR: "
+                f"{data}",
+                flush=True,
+            )
+            return False
+
+        return True
+
+    except Exception as error:
+        print(
+            f"TELEGRAM ERROR: "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+        return False
+
+
+def send_photo(
+    caption,
+    image_buffer,
 ):
     if not BOT_TOKEN or not CHANNEL_ID:
         print(
@@ -60,28 +116,30 @@ def send_message(
         )
         return False
 
-    payload = {
-        "chat_id": CHANNEL_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True,
-    }
-
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-
     try:
         response = requests.post(
-            API_URL,
-            json=payload,
-            timeout=10,
+            SEND_PHOTO_URL,
+            data={
+                "chat_id": CHANNEL_ID,
+                "caption": caption,
+                "parse_mode": "HTML",
+            },
+            files={
+                "photo": (
+                    "trade_signal.png",
+                    image_buffer,
+                    "image/png",
+                )
+            },
+            timeout=30,
         )
 
         data = response.json()
 
         if not data.get("ok"):
             print(
-                f"TELEGRAM ERROR: {data}",
+                f"TELEGRAM ERROR: "
+                f"{data}",
                 flush=True,
             )
             return False
@@ -114,14 +172,12 @@ def get_signal_time(trade):
         TIME_FORMAT,
     )
 
-    minutes = interval_minutes(
-        trade["interval"]
-    )
-
     signal_time = (
         candle_time
         + timedelta(
-            minutes=minutes
+            minutes=interval_minutes(
+                trade["interval"]
+            )
         )
     )
 
@@ -142,9 +198,13 @@ def format_max_trade_time(minutes):
     return f"{minutes} min"
 
 
-def send_trade_opened(trade):
-    direction_icon = get_direction_icon(
-        trade["signal"]
+def build_trade_opened_text(
+    trade
+):
+    direction_icon = (
+        get_direction_icon(
+            trade["signal"]
+        )
     )
 
     entry = (
@@ -164,77 +224,115 @@ def send_trade_opened(trade):
         / trade["risk_pips"]
     )
 
-    signal_time = get_signal_time(
-        trade
+    signal_time = (
+        get_signal_time(
+            trade
+        )
     )
 
-    max_trade_time = format_max_trade_time(
-        trade["max_hold_minutes"]
+    max_trade_time = (
+        format_max_trade_time(
+            trade[
+                "max_hold_minutes"
+            ]
+        )
     )
 
-    text = (
+    return (
         f"{direction_icon} "
-        f"<b>{SYMBOL} · {trade['signal']}</b>\n"
+        f"<b>{SYMBOL} · "
+        f"{trade['signal']}</b>\n"
         "\n"
         "✅ <b>SIGNAL ACTIVE</b>\n"
         "\n"
-        f"🎯 Entry: <code>{entry}</code>\n"
-        f"🛑 Stop Loss: <code>{stop_loss}</code>\n"
-        f"🏁 Take Profit: <code>{take_profit}</code>\n"
+        f"🎯 Entry: "
+        f"<code>{entry}</code>\n"
+        f"🛑 Stop Loss: "
+        f"<code>{stop_loss}</code>\n"
+        f"🏁 Take Profit: "
+        f"<code>{take_profit}</code>\n"
         "\n"
         f"⚖️ Risk: "
-        f"<b>{trade['risk_pips']:.1f} pips</b>\n"
+        f"<b>{trade['risk_pips']:.1f} "
+        f"pips</b>\n"
         f"💰 Reward: "
-        f"<b>{trade['reward_pips']:.1f} pips</b>\n"
+        f"<b>{trade['reward_pips']:.1f} "
+        f"pips</b>\n"
         f"📐 R:R: "
         f"<b>1:{rr:.2f}</b>\n"
         f"⏱ Timeframe: "
-        f"<b>{INTERVAL}</b>\n"
+        f"<b>{trade['interval']}</b>\n"
         f"⌛ Max trade time: "
         f"<b>{max_trade_time}</b>\n"
         "\n"
         f"🕒 Signal time: "
         f"<b>{signal_time}</b>\n"
         "\n"
-        "<i>Test signal · simulated execution</i>"
+        "<i>Test signal · "
+        "simulated execution</i>"
     )
 
-    buttons = {
-        "inline_keyboard": [
-            [
-                {
-                    "text": "📋 Entry",
-                    "copy_text": {
-                        "text": entry
-                    },
-                },
-                {
-                    "text": "📋 SL",
-                    "copy_text": {
-                        "text": stop_loss
-                    },
-                },
-                {
-                    "text": "📋 TP",
-                    "copy_text": {
-                        "text": take_profit
-                    },
-                },
-            ]
-        ]
-    }
+
+def send_trade_opened(
+    trade,
+    candles,
+):
+    text = (
+        build_trade_opened_text(
+            trade
+        )
+    )
+
+    image_buffer = None
+
+    try:
+        image_buffer = (
+            create_trade_chart(
+                candles=candles,
+                trade=trade,
+                symbol=SYMBOL,
+            )
+        )
+
+        sent = send_photo(
+            caption=text,
+            image_buffer=image_buffer,
+        )
+
+        if sent:
+            return True
+
+        print(
+            "TELEGRAM CHART WARNING: "
+            "photo send failed, "
+            "using text fallback",
+            flush=True,
+        )
+
+    except Exception as error:
+        print(
+            "TELEGRAM CHART ERROR: "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+    finally:
+        if image_buffer:
+            image_buffer.close()
 
     return send_message(
-        text=text,
-        reply_markup=buttons,
+        text
     )
 
 
 def send_trade_closed(trade):
     result = trade["result"]
 
-    direction_icon = get_direction_icon(
-        trade["signal"]
+    direction_icon = (
+        get_direction_icon(
+            trade["signal"]
+        )
     )
 
     result_candle = (
@@ -262,23 +360,32 @@ def send_trade_closed(trade):
             f"{icon} <b>{title}</b>\n"
             "\n"
             f"{direction_icon} "
-            f"<b>{SYMBOL} · {trade['signal']}</b>\n"
+            f"<b>{SYMBOL} · "
+            f"{trade['signal']}</b>\n"
             "\n"
-            "SL and TP were reached inside "
-            "the same 5-minute candle.\n"
+            "SL and TP were reached "
+            "inside the same "
+            "5-minute candle.\n"
             "\n"
-            "The exact order cannot be determined "
-            "from OHLC data.\n"
+            "The exact order cannot "
+            "be determined from "
+            "OHLC data.\n"
             "\n"
             f"🕒 Result candle: "
             f"<b>{result_candle}</b>\n"
             "\n"
-            "<i>Test signal · simulated execution</i>"
+            "<i>Test signal · "
+            "simulated execution</i>"
         )
 
     else:
-        net_pips = trade["net_pips"]
-        r_value = trade["r"]
+        net_pips = (
+            trade["net_pips"]
+        )
+
+        r_value = (
+            trade["r"]
+        )
 
         if net_pips > 0:
             pnl_icon = "🟢"
@@ -293,19 +400,22 @@ def send_trade_closed(trade):
             f"{icon} <b>{title}</b>\n"
             "\n"
             f"{direction_icon} "
-            f"<b>{SYMBOL} · {trade['signal']}</b>\n"
+            f"<b>{SYMBOL} · "
+            f"{trade['signal']}</b>\n"
             "\n"
             f"{pnl_icon} Net result: "
-            f"<b>{net_pips:+.2f} pips</b>\n"
+            f"<b>{net_pips:+.2f} "
+            f"pips</b>\n"
             f"📊 Result: "
             f"<b>{r_value:+.2f}R</b>\n"
             "\n"
             f"🕒 Result candle: "
             f"<b>{result_candle}</b>\n"
             "\n"
-            "<i>Test signal · simulated execution</i>"
+            "<i>Test signal · "
+            "simulated execution</i>"
         )
 
     return send_message(
-        text=text
+        text
     )
