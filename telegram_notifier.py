@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from config import SYMBOL
+from config import SYMBOL, INTERVAL
 
 
 BOT_TOKEN = os.getenv(
@@ -21,7 +21,10 @@ API_URL = (
 )
 
 
-def send_message(text):
+def send_message(
+    text,
+    reply_markup=None,
+):
     if not BOT_TOKEN or not CHANNEL_ID:
         print(
             "TELEGRAM WARNING: "
@@ -30,13 +33,20 @@ def send_message(text):
         )
         return False
 
+    payload = {
+        "chat_id": CHANNEL_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+
     try:
         response = requests.post(
             API_URL,
-            json={
-                "chat_id": CHANNEL_ID,
-                "text": text,
-            },
+            json=payload,
             timeout=10,
         )
 
@@ -61,11 +71,37 @@ def send_message(text):
         return False
 
 
+def get_direction_icon(signal):
+    if signal == "BUY":
+        return "📈"
+
+    if signal == "SELL":
+        return "📉"
+
+    return "📊"
+
+
 def send_trade_opened(trade):
     now = datetime.now(
         timezone.utc
     ).strftime(
         "%Y-%m-%d %H:%M UTC"
+    )
+
+    direction_icon = get_direction_icon(
+        trade["signal"]
+    )
+
+    entry = (
+        f"{trade['entry']:.5f}"
+    )
+
+    stop_loss = (
+        f"{trade['stop_loss']:.5f}"
+    )
+
+    take_profit = (
+        f"{trade['take_profit']:.5f}"
     )
 
     rr = (
@@ -74,24 +110,55 @@ def send_trade_opened(trade):
     )
 
     text = (
-        "🔔 NEW SIGNAL\n\n"
-        f"Pair: {SYMBOL}\n"
-        f"Direction: {trade['signal']}\n"
-        f"Entry: {trade['entry']:.5f}\n"
-        f"Stop Loss: {trade['stop_loss']:.5f}\n"
-        f"Take Profit: {trade['take_profit']:.5f}\n"
-        f"Risk: {trade['risk_pips']:.2f} pips\n"
-        f"Reward: {trade['reward_pips']:.2f} pips\n"
-        f"R:R: 1:{rr:.2f}\n"
-        f"Spread model: {trade['spread_pips']:.2f} pips\n"
-        f"Max hold: {trade['max_hold_minutes']} min\n"
-        f"Published: {now}\n\n"
-        "Test signal — simulated trade. "
-        "Profit is not guaranteed."
+        f"{direction_icon} "
+        f"<b>{SYMBOL} · {trade['signal']}</b>\n"
+        "\n"
+        "✅ <b>SIGNAL ACTIVE</b>\n"
+        "\n"
+        f"🎯 Entry        <code>{entry}</code>\n"
+        f"🛑 Stop Loss    <code>{stop_loss}</code>\n"
+        f"🏁 Take Profit  <code>{take_profit}</code>\n"
+        "\n"
+        f"⚖️ Risk: "
+        f"<b>{trade['risk_pips']:.1f} pips</b>\n"
+        f"📐 R:R: "
+        f"<b>1:{rr:.2f}</b>\n"
+        f"⏱ Timeframe: "
+        f"<b>{INTERVAL}</b>\n"
+        "\n"
+        f"🕒 {now}\n"
+        "\n"
+        "<i>Test signal · simulated execution</i>"
     )
 
+    buttons = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "📋 Entry",
+                    "copy_text": {
+                        "text": entry
+                    },
+                },
+                {
+                    "text": "📋 SL",
+                    "copy_text": {
+                        "text": stop_loss
+                    },
+                },
+                {
+                    "text": "📋 TP",
+                    "copy_text": {
+                        "text": take_profit
+                    },
+                },
+            ]
+        ]
+    }
+
     return send_message(
-        text
+        text=text,
+        reply_markup=buttons,
     )
 
 
@@ -104,45 +171,71 @@ def send_trade_closed(trade):
 
     result = trade["result"]
 
+    direction_icon = get_direction_icon(
+        trade["signal"]
+    )
+
     if result == "TAKE_PROFIT":
         icon = "✅"
+        title = "TAKE PROFIT"
 
     elif result == "STOP_LOSS":
         icon = "❌"
+        title = "STOP LOSS"
 
     elif result == "TIMEOUT":
         icon = "⏱"
+        title = "TIME EXIT"
 
     else:
         icon = "⚠️"
+        title = "RESULT UNCLEAR"
 
     if result == "AMBIGUOUS":
-
         text = (
-            f"{icon} TRADE RESULT\n\n"
-            f"Pair: {SYMBOL}\n"
-            f"Direction: {trade['signal']}\n"
-            "Result: AMBIGUOUS\n"
-            "SL and TP were touched "
-            "in the same 5-minute candle.\n"
-            f"Candle: {trade['candle_time']} UTC\n"
-            f"Published: {now}"
+            f"{icon} <b>{title}</b>\n"
+            "\n"
+            f"{direction_icon} "
+            f"<b>{SYMBOL} · {trade['signal']}</b>\n"
+            "\n"
+            "SL and TP were reached inside "
+            "the same 5-minute candle.\n"
+            "\n"
+            "The exact order cannot be determined "
+            "from OHLC data.\n"
+            "\n"
+            f"🕒 {now}\n"
+            "\n"
+            "<i>Test signal · simulated execution</i>"
         )
 
     else:
+        net_pips = trade["net_pips"]
+        r_value = trade["r"]
+
+        if net_pips > 0:
+            pnl_icon = "🟢"
+        elif net_pips < 0:
+            pnl_icon = "🔴"
+        else:
+            pnl_icon = "⚪"
 
         text = (
-            f"{icon} TRADE CLOSED\n\n"
-            f"Pair: {SYMBOL}\n"
-            f"Direction: {trade['signal']}\n"
-            f"Result: {result}\n"
-            f"Gross: {trade['gross_pips']:+.2f} pips\n"
-            f"Net: {trade['net_pips']:+.2f} pips\n"
-            f"R: {trade['r']:+.2f}R\n"
-            f"Candle: {trade['candle_time']} UTC\n"
-            f"Published: {now}"
+            f"{icon} <b>{title}</b>\n"
+            "\n"
+            f"{direction_icon} "
+            f"<b>{SYMBOL} · {trade['signal']}</b>\n"
+            "\n"
+            f"{pnl_icon} Net result: "
+            f"<b>{net_pips:+.2f} pips</b>\n"
+            f"📊 Result: "
+            f"<b>{r_value:+.2f}R</b>\n"
+            "\n"
+            f"🕒 {now}\n"
+            "\n"
+            "<i>Test signal · simulated execution</i>"
         )
 
     return send_message(
-        text
+        text=text
     )
