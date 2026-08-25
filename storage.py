@@ -1,14 +1,23 @@
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
 DB_PATH = Path("/app/data/trading.db")
 
+TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 
 def get_connection():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DB_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    connection = sqlite3.connect(DB_PATH)
+    connection = sqlite3.connect(
+        DB_PATH
+    )
+
     connection.row_factory = sqlite3.Row
 
     return connection
@@ -19,7 +28,27 @@ def get_columns(connection):
         "PRAGMA table_info(market_analysis)"
     ).fetchall()
 
-    return {row["name"] for row in rows}
+    return {
+        row["name"]
+        for row in rows
+    }
+
+
+def interval_minutes(interval):
+    if interval.endswith("min"):
+        return int(
+            interval.replace("min", "")
+        )
+
+    if interval.endswith("h"):
+        return (
+            int(interval.replace("h", ""))
+            * 60
+        )
+
+    raise ValueError(
+        f"Unsupported interval: {interval}"
+    )
 
 
 def init_db():
@@ -55,40 +84,56 @@ def init_db():
             """
         )
 
-        columns = get_columns(connection)
+        columns = get_columns(
+            connection
+        )
 
         migrations = {
-            "ema_direction": "TEXT",
-            "setup_score": "INTEGER NOT NULL DEFAULT 0",
-            "status": "TEXT NOT NULL DEFAULT 'BLOCKED'",
-            "blockers": "TEXT",
+            "ema_direction":
+                "TEXT",
+
+            "setup_score":
+                "INTEGER NOT NULL DEFAULT 0",
+
+            "status":
+                "TEXT NOT NULL DEFAULT 'BLOCKED'",
+
+            "blockers":
+                "TEXT",
         }
 
-        for column, definition in migrations.items():
+        for column, definition in (
+            migrations.items()
+        ):
             if column not in columns:
                 connection.execute(
                     f"""
                     ALTER TABLE market_analysis
-                    ADD COLUMN {column} {definition}
+                    ADD COLUMN
+                    {column} {definition}
                     """
                 )
 
-        # Удаляем возможные старые дубликаты свечей
         connection.execute(
             """
             DELETE FROM market_analysis
             WHERE id NOT IN (
                 SELECT MIN(id)
                 FROM market_analysis
-                GROUP BY symbol, interval, candle_time
+                GROUP BY
+                    symbol,
+                    interval,
+                    candle_time
             )
             """
         )
 
         connection.execute(
             """
-            CREATE UNIQUE INDEX IF NOT EXISTS
+            CREATE UNIQUE INDEX
+            IF NOT EXISTS
             idx_unique_market_candle
+
             ON market_analysis (
                 symbol,
                 interval,
@@ -97,13 +142,40 @@ def init_db():
             """
         )
 
-        # Результаты BUY / SELL
+        # Отдельная таблица именно
+        # торговых сигналов.
         connection.execute(
             """
-            CREATE TABLE IF NOT EXISTS signal_outcomes (
+            CREATE TABLE IF NOT EXISTS
+            signal_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
 
-                analysis_id INTEGER NOT NULL,
+                analysis_id INTEGER NOT NULL UNIQUE,
+
+                created_at TEXT NOT NULL,
+                candle_time TEXT NOT NULL,
+
+                symbol TEXT NOT NULL,
+                interval TEXT NOT NULL,
+
+                signal TEXT NOT NULL,
+
+                entry_price REAL NOT NULL,
+                setup_score INTEGER NOT NULL
+            )
+            """
+        )
+
+        # Новая чистая таблица результатов.
+        # Старую signal_outcomes не удаляем.
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS
+            signal_event_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                signal_event_id INTEGER NOT NULL,
+
                 horizon_minutes INTEGER NOT NULL,
 
                 target_candle_time TEXT NOT NULL,
@@ -115,18 +187,10 @@ def init_db():
                 evaluated_at TEXT NOT NULL,
 
                 UNIQUE (
-                    analysis_id,
+                    signal_event_id,
                     horizon_minutes
                 )
             )
-            """
-        )
-
-        connection.execute(
-            """
-            CREATE INDEX IF NOT EXISTS
-            idx_signal_outcomes_analysis
-            ON signal_outcomes (analysis_id)
             """
         )
 
@@ -139,7 +203,9 @@ def save_analysis(
     interval,
     result,
 ):
-    blockers = "; ".join(result["blockers"])
+    blockers = "; ".join(
+        result.get("blockers", [])
+    )
 
     with get_connection() as connection:
 
@@ -148,10 +214,12 @@ def save_analysis(
             INSERT OR IGNORE INTO market_analysis (
                 created_at,
                 candle_time,
+
                 symbol,
                 interval,
 
                 close,
+
                 ema_fast,
                 ema_slow,
 
@@ -171,9 +239,12 @@ def save_analysis(
                 status,
                 blockers
             )
+
             VALUES (
-                ?, ?, ?, ?,
-                ?, ?, ?,
+                ?, ?,
+                ?, ?,
+                ?,
+                ?, ?,
                 ?, ?,
                 ?,
                 ?, ?,
@@ -184,10 +255,12 @@ def save_analysis(
             (
                 created_at,
                 result["datetime"],
+
                 symbol,
                 interval,
 
                 result["close"],
+
                 result["ema_fast"],
                 result["ema_slow"],
 
@@ -209,15 +282,18 @@ def save_analysis(
             ),
         )
 
-        inserted = cursor.rowcount > 0
+        inserted = (
+            cursor.rowcount > 0
+        )
 
         row = connection.execute(
             """
             SELECT id
             FROM market_analysis
+
             WHERE symbol = ?
-              AND interval = ?
-              AND candle_time = ?
+            AND interval = ?
+            AND candle_time = ?
             """,
             (
                 symbol,
@@ -228,9 +304,149 @@ def save_analysis(
 
         connection.commit()
 
-        analysis_id = row["id"] if row else None
+        analysis_id = (
+            row["id"]
+            if row
+            else None
+        )
 
-        return inserted, analysis_id
+        return (
+            inserted,
+            analysis_id,
+        )
+
+
+def create_signal_event_if_new(
+    analysis_id,
+    created_at,
+    symbol,
+    interval,
+    result,
+):
+    if (
+        result["status"] != "VALID"
+        or result["signal"]
+        not in ("BUY", "SELL")
+    ):
+        return False, None, "NO_SIGNAL"
+
+    with get_connection() as connection:
+
+        # Предыдущая реально сохранённая свеча.
+        previous = connection.execute(
+            """
+            SELECT
+                candle_time,
+                signal,
+                status
+
+            FROM market_analysis
+
+            WHERE symbol = ?
+            AND interval = ?
+            AND candle_time < ?
+
+            ORDER BY candle_time DESC
+
+            LIMIT 1
+            """,
+            (
+                symbol,
+                interval,
+                result["datetime"],
+            ),
+        ).fetchone()
+
+        continuation = False
+
+        if previous:
+
+            current_time = datetime.strptime(
+                result["datetime"],
+                TIME_FORMAT,
+            )
+
+            previous_time = datetime.strptime(
+                previous["candle_time"],
+                TIME_FORMAT,
+            )
+
+            expected_gap = timedelta(
+                minutes=interval_minutes(
+                    interval
+                )
+            )
+
+            actual_gap = (
+                current_time
+                - previous_time
+            )
+
+            if (
+                actual_gap == expected_gap
+                and previous["status"]
+                == "VALID"
+                and previous["signal"]
+                == result["signal"]
+            ):
+                continuation = True
+
+        if continuation:
+            return (
+                False,
+                None,
+                "CONTINUATION",
+            )
+
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO signal_events (
+                analysis_id,
+
+                created_at,
+                candle_time,
+
+                symbol,
+                interval,
+
+                signal,
+
+                entry_price,
+                setup_score
+            )
+
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                analysis_id,
+
+                created_at,
+                result["datetime"],
+
+                symbol,
+                interval,
+
+                result["signal"],
+
+                result["close"],
+                result["setup_score"],
+            ),
+        )
+
+        connection.commit()
+
+        if cursor.rowcount == 0:
+            return (
+                False,
+                None,
+                "ALREADY_EXISTS",
+            )
+
+        return (
+            True,
+            cursor.lastrowid,
+            "NEW_SIGNAL",
+        )
 
 
 def count_records():
@@ -246,32 +462,47 @@ def count_records():
         return row["total"]
 
 
-def get_pending_signals():
+def count_signal_events():
+    with get_connection() as connection:
+
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM signal_events
+            """
+        ).fetchone()
+
+        return row["total"]
+
+
+def get_pending_signal_events():
     with get_connection() as connection:
 
         rows = connection.execute(
             """
             SELECT
-                id,
+                id AS signal_event_id,
+
                 candle_time,
-                close,
+
+                entry_price,
                 signal,
                 setup_score
 
-            FROM market_analysis
-
-            WHERE signal IN ('BUY', 'SELL')
-              AND status = 'VALID'
+            FROM signal_events
 
             ORDER BY candle_time ASC
             """
         ).fetchall()
 
-        return [dict(row) for row in rows]
+        return [
+            dict(row)
+            for row in rows
+        ]
 
 
 def outcome_exists(
-    analysis_id,
+    signal_event_id,
     horizon_minutes,
 ):
     with get_connection() as connection:
@@ -279,13 +510,13 @@ def outcome_exists(
         row = connection.execute(
             """
             SELECT id
-            FROM signal_outcomes
+            FROM signal_event_outcomes
 
-            WHERE analysis_id = ?
-              AND horizon_minutes = ?
+            WHERE signal_event_id = ?
+            AND horizon_minutes = ?
             """,
             (
-                analysis_id,
+                signal_event_id,
                 horizon_minutes,
             ),
         ).fetchone()
@@ -293,21 +524,25 @@ def outcome_exists(
         return row is not None
 
 
-def save_signal_outcome(
-    analysis_id,
+def save_signal_event_outcome(
+    signal_event_id,
     horizon_minutes,
+
     target_candle_time,
     target_close,
+
     directional_pips,
     result,
+
     evaluated_at,
 ):
     with get_connection() as connection:
 
         connection.execute(
             """
-            INSERT OR IGNORE INTO signal_outcomes (
-                analysis_id,
+            INSERT OR IGNORE INTO
+            signal_event_outcomes (
+                signal_event_id,
                 horizon_minutes,
 
                 target_candle_time,
@@ -318,15 +553,19 @@ def save_signal_outcome(
 
                 evaluated_at
             )
+
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                analysis_id,
+                signal_event_id,
                 horizon_minutes,
+
                 target_candle_time,
                 target_close,
+
                 directional_pips,
                 result,
+
                 evaluated_at,
             ),
         )
@@ -346,35 +585,41 @@ def get_outcome_summary():
 
                 SUM(
                     CASE
-                        WHEN result = 'WIN'
-                        THEN 1
-                        ELSE 0
+                    WHEN result = 'WIN'
+                    THEN 1
+                    ELSE 0
                     END
                 ) AS wins,
 
                 SUM(
                     CASE
-                        WHEN result = 'LOSS'
-                        THEN 1
-                        ELSE 0
+                    WHEN result = 'LOSS'
+                    THEN 1
+                    ELSE 0
                     END
                 ) AS losses,
 
                 SUM(
                     CASE
-                        WHEN result = 'FLAT'
-                        THEN 1
-                        ELSE 0
+                    WHEN result = 'FLAT'
+                    THEN 1
+                    ELSE 0
                     END
                 ) AS flat,
 
-                AVG(directional_pips) AS avg_pips
+                AVG(
+                    directional_pips
+                ) AS avg_pips
 
-            FROM signal_outcomes
+            FROM signal_event_outcomes
 
             GROUP BY horizon_minutes
+
             ORDER BY horizon_minutes
             """
         ).fetchall()
 
-        return [dict(row) for row in rows]
+        return [
+            dict(row)
+            for row in rows
+        ]
