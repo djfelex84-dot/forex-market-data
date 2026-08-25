@@ -1,10 +1,6 @@
 import sqlite3
 
-from datetime import (
-    datetime,
-    timedelta,
-)
-
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -16,7 +12,6 @@ TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def get_connection():
-
     DB_PATH.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -37,7 +32,6 @@ def get_table_columns(
     connection,
     table_name,
 ):
-
     rows = connection.execute(
         f"PRAGMA table_info({table_name})"
     ).fetchall()
@@ -48,10 +42,12 @@ def get_table_columns(
     }
 
 
-def interval_minutes(interval):
-
-    if interval.endswith("min"):
-
+def interval_minutes(
+    interval
+):
+    if interval.endswith(
+        "min"
+    ):
         return int(
             interval.replace(
                 "min",
@@ -59,8 +55,9 @@ def interval_minutes(interval):
             )
         )
 
-    if interval.endswith("h"):
-
+    if interval.endswith(
+        "h"
+    ):
         return (
             int(
                 interval.replace(
@@ -72,12 +69,12 @@ def interval_minutes(interval):
         )
 
     raise ValueError(
-        f"Unsupported interval: {interval}"
+        f"Unsupported interval: "
+        f"{interval}"
     )
 
 
 def init_db():
-
     with get_connection() as connection:
 
         # =========================
@@ -123,37 +120,52 @@ def init_db():
         )
 
         migrations = {
-
             "ema_direction":
                 "TEXT",
 
             "setup_score":
-                "INTEGER NOT NULL DEFAULT 0",
+                (
+                    "INTEGER NOT NULL "
+                    "DEFAULT 0"
+                ),
 
             "status":
-                "TEXT NOT NULL DEFAULT 'BLOCKED'",
+                (
+                    "TEXT NOT NULL "
+                    "DEFAULT 'BLOCKED'"
+                ),
 
             "blockers":
                 "TEXT",
         }
 
-        for column, definition in (
-            migrations.items()
-        ):
+        for (
+            column,
+            definition,
+        ) in migrations.items():
 
             if column not in columns:
-
                 connection.execute(
                     f"""
-                    ALTER TABLE market_analysis
+                    ALTER TABLE
+                    market_analysis
+
                     ADD COLUMN
-                    {column} {definition}
+                    {column}
+                    {definition}
                     """
                 )
 
+        # Keep one record for each
+        # symbol + interval + candle.
+        #
+        # EUR/USD and GBP/USD
+        # therefore never collide.
+
         connection.execute(
             """
-            DELETE FROM market_analysis
+            DELETE FROM
+            market_analysis
 
             WHERE id NOT IN (
 
@@ -208,7 +220,8 @@ def init_db():
 
                 entry_price REAL NOT NULL,
 
-                setup_score INTEGER NOT NULL
+                setup_score INTEGER
+                NOT NULL
             )
             """
         )
@@ -225,17 +238,26 @@ def init_db():
                 id INTEGER
                 PRIMARY KEY AUTOINCREMENT,
 
-                signal_event_id INTEGER NOT NULL,
+                signal_event_id INTEGER
+                NOT NULL,
 
-                horizon_minutes INTEGER NOT NULL,
+                horizon_minutes INTEGER
+                NOT NULL,
 
-                target_candle_time TEXT NOT NULL,
-                target_close REAL NOT NULL,
+                target_candle_time TEXT
+                NOT NULL,
 
-                directional_pips REAL NOT NULL,
-                result TEXT NOT NULL,
+                target_close REAL
+                NOT NULL,
 
-                evaluated_at TEXT NOT NULL,
+                directional_pips REAL
+                NOT NULL,
+
+                result TEXT
+                NOT NULL,
+
+                evaluated_at TEXT
+                NOT NULL,
 
                 UNIQUE (
                     signal_event_id,
@@ -262,7 +284,8 @@ def init_db():
 
                 created_at TEXT NOT NULL,
 
-                entry_candle_time TEXT NOT NULL,
+                entry_candle_time TEXT
+                NOT NULL,
 
                 symbol TEXT NOT NULL,
                 interval TEXT NOT NULL,
@@ -290,18 +313,25 @@ def init_db():
             """
         )
 
-        trade_columns = get_table_columns(
-            connection,
-            "virtual_trades",
+        trade_columns = (
+            get_table_columns(
+                connection,
+                "virtual_trades",
+            )
         )
 
         trade_migrations = {
-
             "model_version":
-                "TEXT NOT NULL DEFAULT 'V1'",
+                (
+                    "TEXT NOT NULL "
+                    "DEFAULT 'V1'"
+                ),
 
             "spread_pips":
-                "REAL NOT NULL DEFAULT 0",
+                (
+                    "REAL NOT NULL "
+                    "DEFAULT 0"
+                ),
 
             "net_pnl_pips":
                 "REAL",
@@ -310,20 +340,29 @@ def init_db():
                 "REAL",
 
             "max_hold_minutes":
-                "INTEGER NOT NULL DEFAULT 0",
+                (
+                    "INTEGER NOT NULL "
+                    "DEFAULT 0"
+                ),
         }
 
-        for column, definition in (
-            trade_migrations.items()
-        ):
+        for (
+            column,
+            definition,
+        ) in trade_migrations.items():
 
-            if column not in trade_columns:
-
+            if (
+                column
+                not in trade_columns
+            ):
                 connection.execute(
                     f"""
-                    ALTER TABLE virtual_trades
+                    ALTER TABLE
+                    virtual_trades
+
                     ADD COLUMN
-                    {column} {definition}
+                    {column}
+                    {definition}
                     """
                 )
 
@@ -340,7 +379,6 @@ def save_analysis(
     interval,
     result,
 ):
-
     blockers = "; ".join(
         result.get(
             "blockers",
@@ -349,7 +387,6 @@ def save_analysis(
     )
 
     with get_connection() as connection:
-
         cursor = connection.execute(
             """
             INSERT OR IGNORE INTO
@@ -417,11 +454,20 @@ def save_analysis(
                 result["trend"],
                 result["signal"],
 
-                result["setup_score"],
+                result[
+                    "setup_score"
+                ],
+
                 result["reason"],
 
-                result["ema_direction"],
-                result["setup_score"],
+                result[
+                    "ema_direction"
+                ],
+
+                result[
+                    "setup_score"
+                ],
+
                 result["status"],
                 blockers,
             ),
@@ -458,16 +504,35 @@ def save_analysis(
         )
 
 
-def count_records():
-
+def count_records(
+    symbol=None
+):
     with get_connection() as connection:
 
-        row = connection.execute(
-            """
-            SELECT COUNT(*) AS total
-            FROM market_analysis
-            """
-        ).fetchone()
+        if symbol is None:
+            row = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total
+
+                FROM market_analysis
+                """
+            ).fetchone()
+
+        else:
+            row = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total
+
+                FROM market_analysis
+
+                WHERE symbol = ?
+                """,
+                (
+                    symbol,
+                ),
+            ).fetchone()
 
         return row["total"]
 
@@ -483,16 +548,16 @@ def create_signal_event_if_new(
     interval,
     result,
 ):
-
     if (
-        result["status"] != "VALID"
+        result["status"]
+        != "VALID"
+
         or result["signal"]
         not in (
             "BUY",
             "SELL",
         )
     ):
-
         return (
             False,
             None,
@@ -515,12 +580,15 @@ def create_signal_event_if_new(
         ).fetchone()
 
         if existing:
-
             return (
                 False,
                 existing["id"],
                 "ALREADY_EXISTS",
             )
+
+        # Important:
+        # continuation is checked
+        # only inside the SAME symbol.
 
         last_event = connection.execute(
             """
@@ -534,7 +602,8 @@ def create_signal_event_if_new(
             WHERE symbol = ?
             AND interval = ?
 
-            ORDER BY candle_time DESC
+            ORDER BY
+                candle_time DESC
 
             LIMIT 1
             """,
@@ -544,11 +613,9 @@ def create_signal_event_if_new(
             ),
         ).fetchone()
 
-        if last_event is None:
+        continuation = False
 
-            continuation = False
-
-        else:
+        if last_event is not None:
 
             previous = connection.execute(
                 """
@@ -563,7 +630,8 @@ def create_signal_event_if_new(
                 AND interval = ?
                 AND candle_time < ?
 
-                ORDER BY candle_time DESC
+                ORDER BY
+                    candle_time DESC
 
                 LIMIT 1
                 """,
@@ -573,8 +641,6 @@ def create_signal_event_if_new(
                     result["datetime"],
                 ),
             ).fetchone()
-
-            continuation = False
 
             if previous:
 
@@ -595,8 +661,10 @@ def create_signal_event_if_new(
                 )
 
                 expected_gap = timedelta(
-                    minutes=interval_minutes(
-                        interval
+                    minutes=(
+                        interval_minutes(
+                            interval
+                        )
                     )
                 )
 
@@ -609,17 +677,21 @@ def create_signal_event_if_new(
                     actual_gap
                     == expected_gap
 
-                    and previous["status"]
+                    and previous[
+                        "status"
+                    ]
                     == "VALID"
 
-                    and previous["signal"]
-                    == result["signal"]
+                    and previous[
+                        "signal"
+                    ]
+                    == result[
+                        "signal"
+                    ]
                 ):
-
                     continuation = True
 
         if continuation:
-
             return (
                 False,
                 None,
@@ -646,10 +718,11 @@ def create_signal_event_if_new(
             )
 
             VALUES (
+                ?,
                 ?, ?,
                 ?, ?,
                 ?,
-                ?, ?, ?
+                ?, ?
             )
             """,
             (
@@ -664,14 +737,15 @@ def create_signal_event_if_new(
                 result["signal"],
 
                 result["close"],
-                result["setup_score"],
+                result[
+                    "setup_score"
+                ],
             ),
         )
 
         connection.commit()
 
         if cursor.rowcount == 0:
-
             return (
                 False,
                 None,
@@ -685,17 +759,35 @@ def create_signal_event_if_new(
         )
 
 
-def count_signal_events():
-
+def count_signal_events(
+    symbol=None
+):
     with get_connection() as connection:
 
-        row = connection.execute(
-            """
-            SELECT COUNT(*) AS total
+        if symbol is None:
+            row = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total
 
-            FROM signal_events
-            """
-        ).fetchone()
+                FROM signal_events
+                """
+            ).fetchone()
+
+        else:
+            row = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total
+
+                FROM signal_events
+
+                WHERE symbol = ?
+                """,
+                (
+                    symbol,
+                ),
+            ).fetchone()
 
         return row["total"]
 
@@ -704,12 +796,12 @@ def count_signal_events():
 # 15 / 30 / 60 RESEARCH
 # =========================
 
-def get_pending_signal_events():
-
+def get_pending_signal_events(
+    symbol=None
+):
     with get_connection() as connection:
 
-        rows = connection.execute(
-            """
+        sql = """
             SELECT
 
                 id AS signal_event_id,
@@ -718,12 +810,33 @@ def get_pending_signal_events():
                 entry_price,
 
                 signal,
-                setup_score
+                setup_score,
+
+                symbol,
+                interval
 
             FROM signal_events
+        """
 
-            ORDER BY candle_time ASC
-            """
+        params = []
+
+        if symbol is not None:
+            sql += (
+                " WHERE symbol = ?"
+            )
+
+            params.append(
+                symbol
+            )
+
+        sql += (
+            " ORDER BY "
+            "candle_time ASC"
+        )
+
+        rows = connection.execute(
+            sql,
+            params,
         ).fetchall()
 
         return [
@@ -736,7 +849,6 @@ def outcome_exists(
     signal_event_id,
     horizon_minutes,
 ):
-
     with get_connection() as connection:
 
         row = connection.execute(
@@ -754,7 +866,9 @@ def outcome_exists(
             ),
         ).fetchone()
 
-        return row is not None
+        return (
+            row is not None
+        )
 
 
 def save_signal_event_outcome(
@@ -769,7 +883,6 @@ def save_signal_event_outcome(
 
     evaluated_at,
 ):
-
     with get_connection() as connection:
 
         connection.execute(
@@ -813,52 +926,81 @@ def save_signal_event_outcome(
         connection.commit()
 
 
-def get_outcome_summary():
-
+def get_outcome_summary(
+    symbol=None
+):
     with get_connection() as connection:
 
-        rows = connection.execute(
-            """
+        sql = """
             SELECT
 
-                horizon_minutes,
+                seo.horizon_minutes,
 
-                COUNT(*) AS total,
-
-                SUM(
-                    CASE
-                    WHEN result = 'WIN'
-                    THEN 1
-                    ELSE 0
-                    END
-                ) AS wins,
+                COUNT(*)
+                AS total,
 
                 SUM(
                     CASE
-                    WHEN result = 'LOSS'
+                    WHEN seo.result = 'WIN'
                     THEN 1
                     ELSE 0
                     END
-                ) AS losses,
+                )
+                AS wins,
 
                 SUM(
                     CASE
-                    WHEN result = 'FLAT'
+                    WHEN seo.result = 'LOSS'
                     THEN 1
                     ELSE 0
                     END
-                ) AS flat,
+                )
+                AS losses,
+
+                SUM(
+                    CASE
+                    WHEN seo.result = 'FLAT'
+                    THEN 1
+                    ELSE 0
+                    END
+                )
+                AS flat,
 
                 AVG(
-                    directional_pips
-                ) AS avg_pips
+                    seo.directional_pips
+                )
+                AS avg_pips
 
-            FROM signal_event_outcomes
+            FROM signal_event_outcomes seo
+        """
 
-            GROUP BY horizon_minutes
+        params = []
 
-            ORDER BY horizon_minutes
+        if symbol is not None:
+            sql += """
+                JOIN signal_events se
+
+                ON se.id =
+                seo.signal_event_id
+
+                WHERE se.symbol = ?
             """
+
+            params.append(
+                symbol
+            )
+
+        sql += """
+            GROUP BY
+                seo.horizon_minutes
+
+            ORDER BY
+                seo.horizon_minutes
+        """
+
+        rows = connection.execute(
+            sql,
+            params,
         ).fetchall()
 
         return [
@@ -871,12 +1013,12 @@ def get_outcome_summary():
 # VIRTUAL TRADE V2
 # =========================
 
-def get_signal_events_without_trades():
-
+def get_signal_events_without_trades(
+    symbol=None
+):
     with get_connection() as connection:
 
-        rows = connection.execute(
-            """
+        sql = """
             SELECT
 
                 se.id
@@ -904,9 +1046,27 @@ def get_signal_events_without_trades():
             ON vt.signal_event_id = se.id
 
             WHERE vt.id IS NULL
+        """
 
-            ORDER BY se.candle_time ASC
-            """
+        params = []
+
+        if symbol is not None:
+            sql += (
+                " AND se.symbol = ?"
+            )
+
+            params.append(
+                symbol
+            )
+
+        sql += (
+            " ORDER BY "
+            "se.candle_time ASC"
+        )
+
+        rows = connection.execute(
+            sql,
+            params,
         ).fetchall()
 
         return [
@@ -938,7 +1098,6 @@ def save_virtual_trade(
     spread_pips,
     max_hold_minutes,
 ):
-
     with get_connection() as connection:
 
         cursor = connection.execute(
@@ -1010,7 +1169,6 @@ def save_virtual_trade(
         connection.commit()
 
         if cursor.rowcount == 0:
-
             return (
                 False,
                 None,
@@ -1022,21 +1180,39 @@ def save_virtual_trade(
         )
 
 
-def get_open_virtual_trades():
-
+def get_open_virtual_trades(
+    symbol=None
+):
     with get_connection() as connection:
 
-        rows = connection.execute(
-            """
+        sql = """
             SELECT *
 
             FROM virtual_trades
 
             WHERE status = 'OPEN'
             AND model_version = 'V2'
+        """
 
-            ORDER BY entry_candle_time ASC
-            """
+        params = []
+
+        if symbol is not None:
+            sql += (
+                " AND symbol = ?"
+            )
+
+            params.append(
+                symbol
+            )
+
+        sql += (
+            " ORDER BY "
+            "entry_candle_time ASC"
+        )
+
+        rows = connection.execute(
+            sql,
+            params,
         ).fetchall()
 
         return [
@@ -1059,7 +1235,6 @@ def close_virtual_trade(
     net_pnl_pips,
     r_multiple,
 ):
-
     with get_connection() as connection:
 
         cursor = connection.execute(
@@ -1104,119 +1279,185 @@ def close_virtual_trade(
         )
 
 
-def count_virtual_trades():
-
+def count_virtual_trades(
+    symbol=None
+):
     with get_connection() as connection:
 
-        row = connection.execute(
-            """
-            SELECT COUNT(*) AS total
+        sql = """
+            SELECT
+                COUNT(*) AS total
 
             FROM virtual_trades
 
             WHERE model_version = 'V2'
-            """
+        """
+
+        params = []
+
+        if symbol is not None:
+            sql += (
+                " AND symbol = ?"
+            )
+
+            params.append(
+                symbol
+            )
+
+        row = connection.execute(
+            sql,
+            params,
         ).fetchone()
 
         return row["total"]
 
 
-def count_open_virtual_trades():
-
+def count_open_virtual_trades(
+    symbol=None
+):
     with get_connection() as connection:
 
-        row = connection.execute(
-            """
-            SELECT COUNT(*) AS total
+        sql = """
+            SELECT
+                COUNT(*) AS total
 
             FROM virtual_trades
 
             WHERE model_version = 'V2'
             AND status = 'OPEN'
-            """
+        """
+
+        params = []
+
+        if symbol is not None:
+            sql += (
+                " AND symbol = ?"
+            )
+
+            params.append(
+                symbol
+            )
+
+        row = connection.execute(
+            sql,
+            params,
         ).fetchone()
 
         return row["total"]
 
 
-def get_trade_summary():
-
+def get_trade_summary(
+    symbol=None
+):
     with get_connection() as connection:
 
-        row = connection.execute(
-            """
+        sql = """
             SELECT
 
-                COUNT(*) AS total,
+                COUNT(*)
+                AS total,
 
                 SUM(
                     CASE
                     WHEN exit_reason =
                     'TAKE_PROFIT'
-                    THEN 1 ELSE 0
+                    THEN 1
+                    ELSE 0
                     END
-                ) AS take_profits,
+                )
+                AS take_profits,
 
                 SUM(
                     CASE
                     WHEN exit_reason =
                     'STOP_LOSS'
-                    THEN 1 ELSE 0
+                    THEN 1
+                    ELSE 0
                     END
-                ) AS stop_losses,
+                )
+                AS stop_losses,
 
                 SUM(
                     CASE
                     WHEN exit_reason =
                     'TIMEOUT'
-                    THEN 1 ELSE 0
+                    THEN 1
+                    ELSE 0
                     END
-                ) AS timeouts,
+                )
+                AS timeouts,
 
                 SUM(
                     CASE
                     WHEN status =
                     'AMBIGUOUS'
-                    THEN 1 ELSE 0
+                    THEN 1
+                    ELSE 0
                     END
-                ) AS ambiguous,
+                )
+                AS ambiguous,
 
                 SUM(
                     CASE
                     WHEN status =
                     'OPEN'
-                    THEN 1 ELSE 0
+                    THEN 1
+                    ELSE 0
                     END
-                ) AS open_trades,
+                )
+                AS open_trades,
 
                 SUM(
                     CASE
-                    WHEN status = 'CLOSED'
+                    WHEN status =
+                    'CLOSED'
                     THEN net_pnl_pips
                     ELSE 0
                     END
-                ) AS total_net_pips,
+                )
+                AS total_net_pips,
 
                 AVG(
                     CASE
-                    WHEN status = 'CLOSED'
+                    WHEN status =
+                    'CLOSED'
                     THEN net_pnl_pips
                     ELSE NULL
                     END
-                ) AS avg_net_pips,
+                )
+                AS avg_net_pips,
 
                 AVG(
                     CASE
-                    WHEN status = 'CLOSED'
+                    WHEN status =
+                    'CLOSED'
                     THEN r_multiple
                     ELSE NULL
                     END
-                ) AS avg_r
+                )
+                AS avg_r
 
             FROM virtual_trades
 
             WHERE model_version = 'V2'
-            """
+        """
+
+        params = []
+
+        if symbol is not None:
+            sql += (
+                " AND symbol = ?"
+            )
+
+            params.append(
+                symbol
+            )
+
+        row = connection.execute(
+            sql,
+            params,
         ).fetchone()
 
-        return dict(row)
+        return dict(
+            row
+        )
