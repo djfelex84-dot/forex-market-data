@@ -1,19 +1,24 @@
-from datetime import datetime
-
+from datetime import (
+    datetime,
+    timedelta,
+)
 
 from config import (
     STOP_LOSS_ATR_MULTIPLIER,
-    TAKE_PROFIT_ATR_MULTIPLIER,
+    MIN_STOP_PIPS,
+    TAKE_PROFIT_R_MULTIPLE,
+    ASSUMED_SPREAD_PIPS,
+    MAX_TRADE_MINUTES,
+    TRADE_MODEL_VERSION,
     PIP_SIZE,
 )
-
 
 from storage import (
     get_signal_events_without_trades,
     save_virtual_trade,
-
     get_open_virtual_trades,
     close_virtual_trade,
+    interval_minutes,
 )
 
 
@@ -21,15 +26,11 @@ TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def ensure_virtual_trades():
-
     created_trades = []
 
-    events = (
-        get_signal_events_without_trades()
-    )
+    events = get_signal_events_without_trades()
 
     for event in events:
-
         entry_price = float(
             event["entry_price"]
         )
@@ -40,18 +41,27 @@ def ensure_virtual_trades():
 
         signal = event["signal"]
 
-        stop_distance = (
+        atr_stop_distance = (
             atr
             * STOP_LOSS_ATR_MULTIPLIER
         )
 
+        minimum_stop_distance = (
+            MIN_STOP_PIPS
+            * PIP_SIZE
+        )
+
+        stop_distance = max(
+            atr_stop_distance,
+            minimum_stop_distance,
+        )
+
         target_distance = (
-            atr
-            * TAKE_PROFIT_ATR_MULTIPLIER
+            stop_distance
+            * TAKE_PROFIT_R_MULTIPLE
         )
 
         if signal == "BUY":
-
             stop_loss = (
                 entry_price
                 - stop_distance
@@ -63,7 +73,6 @@ def ensure_virtual_trades():
             )
 
         elif signal == "SELL":
-
             stop_loss = (
                 entry_price
                 + stop_distance
@@ -87,59 +96,54 @@ def ensure_virtual_trades():
             / PIP_SIZE
         )
 
-        created, trade_id = (
-            save_virtual_trade(
+        created, trade_id = save_virtual_trade(
+            signal_event_id=
+                event["signal_event_id"],
 
-                signal_event_id=
-                    event[
-                        "signal_event_id"
-                    ],
+            created_at=
+                event["created_at"],
 
-                created_at=
-                    event[
-                        "created_at"
-                    ],
+            entry_candle_time=
+                event["candle_time"],
 
-                entry_candle_time=
-                    event[
-                        "candle_time"
-                    ],
+            symbol=
+                event["symbol"],
 
-                symbol=
-                    event[
-                        "symbol"
-                    ],
+            interval=
+                event["interval"],
 
-                interval=
-                    event[
-                        "interval"
-                    ],
+            signal=
+                signal,
 
-                signal=
-                    signal,
+            entry_price=
+                entry_price,
 
-                entry_price=
-                    entry_price,
+            atr=
+                atr,
 
-                atr=
-                    atr,
+            stop_loss=
+                stop_loss,
 
-                stop_loss=
-                    stop_loss,
+            take_profit=
+                take_profit,
 
-                take_profit=
-                    take_profit,
+            risk_pips=
+                risk_pips,
 
-                risk_pips=
-                    risk_pips,
+            reward_pips=
+                reward_pips,
 
-                reward_pips=
-                    reward_pips,
-            )
+            model_version=
+                TRADE_MODEL_VERSION,
+
+            spread_pips=
+                ASSUMED_SPREAD_PIPS,
+
+            max_hold_minutes=
+                MAX_TRADE_MINUTES,
         )
 
         if created:
-
             created_trades.append(
                 {
                     "id":
@@ -147,11 +151,6 @@ def ensure_virtual_trades():
 
                     "signal":
                         signal,
-
-                    "entry_time":
-                        event[
-                            "candle_time"
-                        ],
 
                     "entry":
                         entry_price,
@@ -167,42 +166,123 @@ def ensure_virtual_trades():
 
                     "reward_pips":
                         reward_pips,
+
+                    "spread_pips":
+                        ASSUMED_SPREAD_PIPS,
+
+                    "max_hold_minutes":
+                        MAX_TRADE_MINUTES,
                 }
             )
 
     return created_trades
 
 
-def evaluate_open_trades(candles):
-
-    results = []
-
-    trades = (
-        get_open_virtual_trades()
-    )
-
-    for trade in trades:
-
-        entry_time = datetime.strptime(
-            trade[
-                "entry_candle_time"
-            ],
-            TIME_FORMAT,
+def calculate_directional_pips(
+    signal,
+    entry_price,
+    exit_price,
+):
+    if signal == "BUY":
+        difference = (
+            exit_price
+            - entry_price
         )
 
-        for candle in candles:
+    else:
+        difference = (
+            entry_price
+            - exit_price
+        )
 
-            candle_time = datetime.strptime(
-                candle["datetime"],
+    return (
+        difference
+        / PIP_SIZE
+    )
+
+
+def evaluate_open_trades(candles):
+    results = []
+
+    trades = get_open_virtual_trades()
+
+    for trade in trades:
+        signal_candle_open = (
+            datetime.strptime(
+                trade[
+                    "entry_candle_time"
+                ],
                 TIME_FORMAT,
             )
+        )
 
-            # Entry happens at the CLOSE
-            # of the signal candle.
-            #
-            # Therefore we only inspect
-            # candles AFTER signal candle.
-            if candle_time <= entry_time:
+        candle_interval_minutes = (
+            interval_minutes(
+                trade["interval"]
+            )
+        )
+
+        actual_entry_time = (
+            signal_candle_open
+            + timedelta(
+                minutes=
+                    candle_interval_minutes
+            )
+        )
+
+        maximum_exit_time = (
+            actual_entry_time
+            + timedelta(
+                minutes=
+                    trade[
+                        "max_hold_minutes"
+                    ]
+            )
+        )
+
+        entry_price = float(
+            trade["entry_price"]
+        )
+
+        stop_loss = float(
+            trade["stop_loss"]
+        )
+
+        take_profit = float(
+            trade["take_profit"]
+        )
+
+        risk_pips = float(
+            trade["risk_pips"]
+        )
+
+        reward_pips = float(
+            trade["reward_pips"]
+        )
+
+        spread_pips = float(
+            trade["spread_pips"]
+        )
+
+        signal = trade["signal"]
+
+        for candle in candles:
+            candle_open = (
+                datetime.strptime(
+                    candle["datetime"],
+                    TIME_FORMAT,
+                )
+            )
+
+            candle_close_time = (
+                candle_open
+                + timedelta(
+                    minutes=
+                        candle_interval_minutes
+                )
+            )
+
+            if candle_open < actual_entry_time:
                 continue
 
             high = float(
@@ -213,18 +293,11 @@ def evaluate_open_trades(candles):
                 candle["low"]
             )
 
-            signal = trade["signal"]
-
-            stop_loss = float(
-                trade["stop_loss"]
-            )
-
-            take_profit = float(
-                trade["take_profit"]
+            close = float(
+                candle["close"]
             )
 
             if signal == "BUY":
-
                 stop_hit = (
                     low <= stop_loss
                 )
@@ -233,8 +306,7 @@ def evaluate_open_trades(candles):
                     high >= take_profit
                 )
 
-            elif signal == "SELL":
-
+            else:
                 stop_hit = (
                     high >= stop_loss
                 )
@@ -243,19 +315,10 @@ def evaluate_open_trades(candles):
                     low <= take_profit
                 )
 
-            else:
-                continue
-
-            # Both levels touched
-            # during same 5-minute candle.
-            #
-            # OHLC does not tell us which
-            # happened first.
             if (
                 stop_hit
                 and target_hit
             ):
-
                 closed = close_virtual_trade(
                     trade_id=
                         trade["id"],
@@ -272,12 +335,17 @@ def evaluate_open_trades(candles):
                     exit_reason=
                         "SL_AND_TP_SAME_CANDLE",
 
-                    pnl_pips=
+                    gross_pnl_pips=
+                        None,
+
+                    net_pnl_pips=
+                        None,
+
+                    r_multiple=
                         None,
                 )
 
                 if closed:
-
                     results.append(
                         {
                             "trade_id":
@@ -294,7 +362,13 @@ def evaluate_open_trades(candles):
                                     "datetime"
                                 ],
 
-                            "pips":
+                            "gross_pips":
+                                None,
+
+                            "net_pips":
+                                None,
+
+                            "r":
                                 None,
                         }
                     )
@@ -302,11 +376,18 @@ def evaluate_open_trades(candles):
                 break
 
             if target_hit:
+                gross_pips = (
+                    reward_pips
+                )
 
-                pnl_pips = float(
-                    trade[
-                        "reward_pips"
-                    ]
+                net_pips = (
+                    gross_pips
+                    - spread_pips
+                )
+
+                r_multiple = (
+                    net_pips
+                    / risk_pips
                 )
 
                 closed = close_virtual_trade(
@@ -317,9 +398,7 @@ def evaluate_open_trades(candles):
                         "CLOSED",
 
                     exit_candle_time=
-                        candle[
-                            "datetime"
-                        ],
+                        candle["datetime"],
 
                     exit_price=
                         take_profit,
@@ -327,12 +406,17 @@ def evaluate_open_trades(candles):
                     exit_reason=
                         "TAKE_PROFIT",
 
-                    pnl_pips=
-                        pnl_pips,
+                    gross_pnl_pips=
+                        gross_pips,
+
+                    net_pnl_pips=
+                        net_pips,
+
+                    r_multiple=
+                        r_multiple,
                 )
 
                 if closed:
-
                     results.append(
                         {
                             "trade_id":
@@ -349,19 +433,32 @@ def evaluate_open_trades(candles):
                                     "datetime"
                                 ],
 
-                            "pips":
-                                pnl_pips,
+                            "gross_pips":
+                                gross_pips,
+
+                            "net_pips":
+                                net_pips,
+
+                            "r":
+                                r_multiple,
                         }
                     )
 
                 break
 
             if stop_hit:
+                gross_pips = (
+                    -risk_pips
+                )
 
-                pnl_pips = -float(
-                    trade[
-                        "risk_pips"
-                    ]
+                net_pips = (
+                    gross_pips
+                    - spread_pips
+                )
+
+                r_multiple = (
+                    net_pips
+                    / risk_pips
                 )
 
                 closed = close_virtual_trade(
@@ -372,9 +469,7 @@ def evaluate_open_trades(candles):
                         "CLOSED",
 
                     exit_candle_time=
-                        candle[
-                            "datetime"
-                        ],
+                        candle["datetime"],
 
                     exit_price=
                         stop_loss,
@@ -382,12 +477,17 @@ def evaluate_open_trades(candles):
                     exit_reason=
                         "STOP_LOSS",
 
-                    pnl_pips=
-                        pnl_pips,
+                    gross_pnl_pips=
+                        gross_pips,
+
+                    net_pnl_pips=
+                        net_pips,
+
+                    r_multiple=
+                        r_multiple,
                 )
 
                 if closed:
-
                     results.append(
                         {
                             "trade_id":
@@ -404,11 +504,80 @@ def evaluate_open_trades(candles):
                                     "datetime"
                                 ],
 
-                            "pips":
-                                pnl_pips,
+                            "gross_pips":
+                                gross_pips,
+
+                            "net_pips":
+                                net_pips,
+
+                            "r":
+                                r_multiple,
                         }
                     )
 
                 break
 
-    return results
+            if (
+                candle_close_time
+                >= maximum_exit_time
+            ):
+                gross_pips = (
+                    calculate_directional_pips(
+                        signal=
+                            signal,
+
+                        entry_price=
+                            entry_price,
+
+                        exit_price=
+                            close,
+                    )
+                )
+
+                net_pips = (
+                    gross_pips
+                    - spread_pips
+                )
+
+                r_multiple = (
+                    net_pips
+                    / risk_pips
+                )
+
+                closed = close_virtual_trade(
+                    trade_id=
+                        trade["id"],
+
+                    status=
+                        "CLOSED",
+
+                    exit_candle_time=
+                        candle["datetime"],
+
+                    exit_price=
+                        close,
+
+                    exit_reason=
+                        "TIMEOUT",
+
+                    gross_pnl_pips=
+                        gross_pips,
+
+                    net_pnl_pips=
+                        net_pips,
+
+                    r_multiple=
+                        r_multiple,
+                )
+
+                if closed:
+                    results.append(
+                        {
+                            "trade_id":
+                                trade["id"],
+
+                            "signal":
+                                signal,
+
+                            "result":
+                                "
