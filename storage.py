@@ -142,8 +142,6 @@ def init_db():
             """
         )
 
-        # Отдельная таблица именно
-        # торговых сигналов.
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS
@@ -166,8 +164,6 @@ def init_db():
             """
         )
 
-        # Новая чистая таблица результатов.
-        # Старую signal_outcomes не удаляем.
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS
@@ -304,15 +300,9 @@ def save_analysis(
 
         connection.commit()
 
-        analysis_id = (
-            row["id"]
-            if row
-            else None
-        )
-
         return (
             inserted,
-            analysis_id,
+            row["id"] if row else None,
         )
 
 
@@ -332,19 +322,37 @@ def create_signal_event_if_new(
 
     with get_connection() as connection:
 
-        # Предыдущая реально сохранённая свеча.
-        previous = connection.execute(
+        # Если именно эта свеча уже имеет
+        # signal event, повторно не создаём.
+        existing = connection.execute(
+            """
+            SELECT id
+            FROM signal_events
+            WHERE analysis_id = ?
+            """,
+            (analysis_id,),
+        ).fetchone()
+
+        if existing:
+            return (
+                False,
+                existing["id"],
+                "ALREADY_EXISTS",
+            )
+
+        # Есть ли вообще хоть один signal event
+        # после введения новой системы.
+        last_event = connection.execute(
             """
             SELECT
+                id,
                 candle_time,
-                signal,
-                status
+                signal
 
-            FROM market_analysis
+            FROM signal_events
 
             WHERE symbol = ?
             AND interval = ?
-            AND candle_time < ?
 
             ORDER BY candle_time DESC
 
@@ -353,43 +361,71 @@ def create_signal_event_if_new(
             (
                 symbol,
                 interval,
-                result["datetime"],
             ),
         ).fetchone()
 
-        continuation = False
+        # Это первый event новой системы.
+        # Создаём его даже если предыдущие
+        # свечи в старой базе тоже были VALID.
+        if last_event is None:
+            continuation = False
 
-        if previous:
+        else:
+            previous = connection.execute(
+                """
+                SELECT
+                    candle_time,
+                    signal,
+                    status
 
-            current_time = datetime.strptime(
-                result["datetime"],
-                TIME_FORMAT,
-            )
+                FROM market_analysis
 
-            previous_time = datetime.strptime(
-                previous["candle_time"],
-                TIME_FORMAT,
-            )
+                WHERE symbol = ?
+                AND interval = ?
+                AND candle_time < ?
 
-            expected_gap = timedelta(
-                minutes=interval_minutes(
-                    interval
+                ORDER BY candle_time DESC
+
+                LIMIT 1
+                """,
+                (
+                    symbol,
+                    interval,
+                    result["datetime"],
+                ),
+            ).fetchone()
+
+            continuation = False
+
+            if previous:
+                current_time = datetime.strptime(
+                    result["datetime"],
+                    TIME_FORMAT,
                 )
-            )
 
-            actual_gap = (
-                current_time
-                - previous_time
-            )
+                previous_time = datetime.strptime(
+                    previous["candle_time"],
+                    TIME_FORMAT,
+                )
 
-            if (
-                actual_gap == expected_gap
-                and previous["status"]
-                == "VALID"
-                and previous["signal"]
-                == result["signal"]
-            ):
-                continuation = True
+                expected_gap = timedelta(
+                    minutes=interval_minutes(
+                        interval
+                    )
+                )
+
+                actual_gap = (
+                    current_time
+                    - previous_time
+                )
+
+                if (
+                    actual_gap == expected_gap
+                    and previous["status"] == "VALID"
+                    and previous["signal"]
+                    == result["signal"]
+                ):
+                    continuation = True
 
         if continuation:
             return (
@@ -451,7 +487,6 @@ def create_signal_event_if_new(
 
 def count_records():
     with get_connection() as connection:
-
         row = connection.execute(
             """
             SELECT COUNT(*) AS total
@@ -464,7 +499,6 @@ def count_records():
 
 def count_signal_events():
     with get_connection() as connection:
-
         row = connection.execute(
             """
             SELECT COUNT(*) AS total
@@ -482,9 +516,7 @@ def get_pending_signal_events():
             """
             SELECT
                 id AS signal_event_id,
-
                 candle_time,
-
                 entry_price,
                 signal,
                 setup_score
