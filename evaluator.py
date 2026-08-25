@@ -6,7 +6,7 @@ from datetime import (
 
 from config import (
     OUTCOME_HORIZONS_MINUTES,
-    PIP_SIZE,
+    get_instrument_config,
 )
 
 from storage import (
@@ -19,7 +19,19 @@ from storage import (
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
-def evaluate_pending_signals(candles):
+def evaluate_pending_signals(
+    candles,
+    symbol,
+):
+    instrument = (
+        get_instrument_config(
+            symbol
+        )
+    )
+
+    pip_size = instrument[
+        "pip_size"
+    ]
 
     candle_map = {
         candle["datetime"]: candle
@@ -28,8 +40,14 @@ def evaluate_pending_signals(candles):
 
     evaluated = []
 
+    # Important:
+    # only signals belonging
+    # to this exact symbol
+    # are evaluated.
     signals = (
-        get_pending_signal_events()
+        get_pending_signal_events(
+            symbol=symbol
+        )
     )
 
     for signal in signals:
@@ -43,14 +61,18 @@ def evaluate_pending_signals(candles):
             signal["entry_price"]
         )
 
-        direction = signal["signal"]
+        direction = signal[
+            "signal"
+        ]
 
         for horizon in (
             OUTCOME_HORIZONS_MINUTES
         ):
 
             if outcome_exists(
-                signal["signal_event_id"],
+                signal[
+                    "signal_event_id"
+                ],
                 horizon,
             ):
                 continue
@@ -78,7 +100,9 @@ def evaluate_pending_signals(candles):
                 continue
 
             target_close = float(
-                target_candle["close"]
+                target_candle[
+                    "close"
+                ]
             )
 
             if direction == "BUY":
@@ -100,7 +124,7 @@ def evaluate_pending_signals(candles):
 
             directional_pips = (
                 directional_change
-                / PIP_SIZE
+                / pip_size
             )
 
             if directional_pips > 0.05:
@@ -121,32 +145,42 @@ def evaluate_pending_signals(candles):
             )
 
             save_signal_event_outcome(
-                signal_event_id=
+                signal_event_id=(
                     signal[
                         "signal_event_id"
-                    ],
+                    ]
+                ),
 
-                horizon_minutes=
-                    horizon,
+                horizon_minutes=(
+                    horizon
+                ),
 
-                target_candle_time=
-                    target_key,
+                target_candle_time=(
+                    target_key
+                ),
 
-                target_close=
-                    target_close,
+                target_close=(
+                    target_close
+                ),
 
-                directional_pips=
-                    directional_pips,
+                directional_pips=(
+                    directional_pips
+                ),
 
-                result=
-                    outcome,
+                result=(
+                    outcome
+                ),
 
-                evaluated_at=
-                    evaluated_at,
+                evaluated_at=(
+                    evaluated_at
+                ),
             )
 
             evaluated.append(
                 {
+                    "symbol":
+                        symbol,
+
                     "signal":
                         direction,
 
