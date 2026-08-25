@@ -342,9 +342,6 @@ def init_db():
                     "DEFAULT 0"
                 ),
 
-            # Old trades stay NULL.
-            # We did not historically
-            # track their excursions.
             "mae_pips":
                 "REAL",
 
@@ -1516,3 +1513,110 @@ def get_trade_summary(
         return dict(
             row
         )
+
+
+# =========================
+# MAE / MFE RESEARCH
+# =========================
+
+def get_excursion_summary(
+    symbol=None
+):
+    with get_connection() as connection:
+
+        sql = """
+            SELECT
+
+                exit_reason,
+
+                COUNT(*)
+                AS total_closed,
+
+                SUM(
+                    CASE
+                    WHEN mae_pips IS NOT NULL
+                    AND mfe_pips IS NOT NULL
+                    THEN 1
+                    ELSE 0
+                    END
+                )
+                AS tracked,
+
+                AVG(
+                    CASE
+                    WHEN mae_pips IS NOT NULL
+                    THEN mae_pips
+                    ELSE NULL
+                    END
+                )
+                AS avg_mae_pips,
+
+                AVG(
+                    CASE
+                    WHEN mfe_pips IS NOT NULL
+                    THEN mfe_pips
+                    ELSE NULL
+                    END
+                )
+                AS avg_mfe_pips,
+
+                MAX(
+                    mae_pips
+                )
+                AS max_mae_pips,
+
+                MAX(
+                    mfe_pips
+                )
+                AS max_mfe_pips
+
+            FROM virtual_trades
+
+            WHERE model_version = 'V2'
+              AND status = 'CLOSED'
+              AND exit_reason IN (
+                    'TAKE_PROFIT',
+                    'STOP_LOSS',
+                    'TIMEOUT'
+              )
+        """
+
+        params = []
+
+        if symbol is not None:
+            sql += (
+                " AND symbol = ?"
+            )
+
+            params.append(
+                symbol
+            )
+
+        sql += """
+            GROUP BY
+                exit_reason
+
+            ORDER BY
+                CASE exit_reason
+                    WHEN 'TAKE_PROFIT'
+                    THEN 1
+
+                    WHEN 'STOP_LOSS'
+                    THEN 2
+
+                    WHEN 'TIMEOUT'
+                    THEN 3
+
+                    ELSE 4
+                END
+        """
+
+        rows = connection.execute(
+            sql,
+            params,
+        ).fetchall()
+
+        return [
+            dict(row)
+            for row in rows
+        ]
