@@ -1,3 +1,4 @@
+import os
 import time
 
 from datetime import (
@@ -43,6 +44,7 @@ from trade_manager import (
 from telegram_notifier import (
     send_trade_opened,
     send_trade_closed,
+    send_vip_message,
 )
 
 from daily_report import (
@@ -77,6 +79,11 @@ from health_monitor import (
 
 
 CANDLE_CLOSE_DELAY_SECONDS = 15
+
+VIP_TEST_MARKER_PATH = (
+    "/app/data/"
+    "vip_connection_test_sent.flag"
+)
 
 
 def interval_to_seconds(interval):
@@ -113,6 +120,68 @@ INTERVAL_SECONDS = (
         INTERVAL
     )
 )
+
+
+def send_vip_connection_test_once():
+    if os.path.exists(
+        VIP_TEST_MARKER_PATH
+    ):
+        print(
+            "VIP channel: "
+            "connection test already confirmed",
+            flush=True,
+        )
+        return True
+
+    message = (
+        "✅ <b>AS VIP channel "
+        "connected successfully.</b>\n"
+        "\n"
+        "<i>Private channel "
+        "connection test.</i>"
+    )
+
+    sent = send_vip_message(
+        message
+    )
+
+    if not sent:
+        print(
+            "VIP CHANNEL TEST FAILED | "
+            "Will retry after next restart",
+            flush=True,
+        )
+        return False
+
+    try:
+        with open(
+            VIP_TEST_MARKER_PATH,
+            "w",
+            encoding="utf-8",
+        ) as file:
+            file.write(
+                datetime.now(
+                    timezone.utc
+                ).strftime(
+                    "%Y-%m-%d %H:%M:%S UTC"
+                )
+            )
+
+    except Exception as error:
+        print(
+            "VIP TEST MARKER ERROR | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+    print(
+        "VIP CHANNEL TEST SENT | "
+        "Connection confirmed",
+        flush=True,
+    )
+
+    return True
 
 
 def format_optional_pips(
@@ -870,9 +939,26 @@ def main():
     )
 
     print(
+        "VIP channel: configured, "
+        "live signals disabled",
+        flush=True,
+    )
+
+    print(
         "MAE/MFE tracking: enabled",
         flush=True,
     )
+
+    try:
+        send_vip_connection_test_once()
+
+    except Exception as error:
+        print(
+            "VIP CHANNEL TEST ERROR | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
 
     try:
         analyze_once()
