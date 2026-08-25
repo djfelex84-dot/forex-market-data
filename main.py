@@ -1,25 +1,54 @@
 import time
-from datetime import datetime, timezone
+
+from datetime import (
+    datetime,
+    timezone,
+)
+
 
 from config import (
     SYMBOL,
     INTERVAL,
 )
 
-from market_data import fetch_candles
-from strategy import analyze_market
+
+from market_data import (
+    fetch_candles,
+)
+
+
+from strategy import (
+    analyze_market,
+)
+
 
 from storage import (
     init_db,
+
     save_analysis,
+
     count_records,
     count_signal_events,
+
     create_signal_event_if_new,
+
     get_outcome_summary,
+
+    count_virtual_trades,
+    count_open_virtual_trades,
+
+    get_trade_summary,
 )
+
 
 from evaluator import (
     evaluate_pending_signals,
+)
+
+
+from trade_manager import (
+    ensure_virtual_trades,
+    evaluate_open_trades,
 )
 
 
@@ -27,51 +56,99 @@ CANDLE_CLOSE_DELAY_SECONDS = 15
 
 
 def interval_to_seconds(interval):
+
     if interval.endswith("min"):
+
         return (
-            int(interval.replace("min", ""))
+            int(
+                interval.replace(
+                    "min",
+                    "",
+                )
+            )
             * 60
         )
 
     if interval.endswith("h"):
+
         return (
-            int(interval.replace("h", ""))
+            int(
+                interval.replace(
+                    "h",
+                    "",
+                )
+            )
             * 3600
         )
 
     raise ValueError(
-        f"Unsupported interval: {interval}"
+        f"Unsupported interval: "
+        f"{interval}"
     )
 
 
-INTERVAL_SECONDS = interval_to_seconds(
-    INTERVAL
+INTERVAL_SECONDS = (
+    interval_to_seconds(
+        INTERVAL
+    )
 )
 
 
 def format_result(result):
+
     return (
         f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}] "
+
         f"{SYMBOL} {INTERVAL} | "
-        f"Candle={result['datetime']} | "
-        f"Close={result['close']:.5f} | "
-        f"EMA20={result['ema_fast']:.5f} | "
-        f"EMA50={result['ema_slow']:.5f} | "
-        f"RSI14={result['rsi']:.2f} | "
-        f"ATR14={result['atr']:.5f} | "
-        f"EMA-distance={result['ema_distance_atr']:.2f} ATR | "
-        f"EMA-direction={result['ema_direction']} | "
-        f"Trend={result['trend']} | "
-        f"Candidate={result['candidate']} | "
-        f"Signal={result['signal']} | "
-        f"Status={result['status']} | "
-        f"SetupScore={result['setup_score']}/100 | "
+
+        f"Candle="
+        f"{result['datetime']} | "
+
+        f"Close="
+        f"{result['close']:.5f} | "
+
+        f"EMA20="
+        f"{result['ema_fast']:.5f} | "
+
+        f"EMA50="
+        f"{result['ema_slow']:.5f} | "
+
+        f"RSI14="
+        f"{result['rsi']:.2f} | "
+
+        f"ATR14="
+        f"{result['atr']:.5f} | "
+
+        f"EMA-distance="
+        f"{result['ema_distance_atr']:.2f} ATR | "
+
+        f"EMA-direction="
+        f"{result['ema_direction']} | "
+
+        f"Trend="
+        f"{result['trend']} | "
+
+        f"Candidate="
+        f"{result['candidate']} | "
+
+        f"Signal="
+        f"{result['signal']} | "
+
+        f"Status="
+        f"{result['status']} | "
+
+        f"SetupScore="
+        f"{result['setup_score']}/100 | "
+
         f"{result['reason']}"
     )
 
 
 def print_outcome_summary():
-    summary = get_outcome_summary()
+
+    summary = (
+        get_outcome_summary()
+    )
 
     if not summary:
         return
@@ -82,65 +159,238 @@ def print_outcome_summary():
     )
 
     for row in summary:
+
         total = row["total"]
-        wins = row["wins"] or 0
+
+        wins = (
+            row["wins"] or 0
+        )
 
         win_rate = (
-            wins / total * 100
+            wins
+            / total
+            * 100
+
             if total
             else 0
         )
 
         avg_pips = (
-            row["avg_pips"] or 0
+            row["avg_pips"]
+            or 0
         )
 
         print(
             f"{row['horizon_minutes']}m | "
-            f"Signals={total} | "
-            f"Wins={wins} | "
-            f"Losses={row['losses'] or 0} | "
-            f"Flat={row['flat'] or 0} | "
-            f"WinRate={win_rate:.1f}% | "
-            f"AvgPips={avg_pips:.2f}",
+
+            f"Signals="
+            f"{total} | "
+
+            f"Wins="
+            f"{wins} | "
+
+            f"Losses="
+            f"{row['losses'] or 0} | "
+
+            f"Flat="
+            f"{row['flat'] or 0} | "
+
+            f"WinRate="
+            f"{win_rate:.1f}% | "
+
+            f"AvgPips="
+            f"{avg_pips:.2f}",
             flush=True,
         )
 
 
-def analyze_once():
-    candles = fetch_candles()
+def print_new_virtual_trades(
+    trades
+):
 
-    result = analyze_market(
-        candles
+    for trade in trades:
+
+        print(
+            "VIRTUAL TRADE OPENED | "
+
+            f"ID="
+            f"{trade['id']} | "
+
+            f"{trade['signal']} | "
+
+            f"Entry="
+            f"{trade['entry']:.5f} | "
+
+            f"SL="
+            f"{trade['stop_loss']:.5f} | "
+
+            f"TP="
+            f"{trade['take_profit']:.5f} | "
+
+            f"Risk="
+            f"{trade['risk_pips']:.2f} pips | "
+
+            f"Reward="
+            f"{trade['reward_pips']:.2f} pips | "
+
+            f"R:R=1:"
+            f"{trade['reward_pips'] / trade['risk_pips']:.2f}",
+            flush=True,
+        )
+
+
+def print_trade_results(
+    results
+):
+
+    for trade in results:
+
+        if (
+            trade["result"]
+            == "AMBIGUOUS"
+        ):
+
+            print(
+                "VIRTUAL TRADE RESULT | "
+
+                f"ID="
+                f"{trade['trade_id']} | "
+
+                f"{trade['signal']} | "
+
+                f"AMBIGUOUS | "
+
+                f"Candle="
+                f"{trade['candle_time']} | "
+
+                f"SL and TP touched "
+                f"in same candle",
+                flush=True,
+            )
+
+        else:
+
+            print(
+                "VIRTUAL TRADE CLOSED | "
+
+                f"ID="
+                f"{trade['trade_id']} | "
+
+                f"{trade['signal']} | "
+
+                f"{trade['result']} | "
+
+                f"Pips="
+                f"{trade['pips']:+.2f} | "
+
+                f"Candle="
+                f"{trade['candle_time']}",
+                flush=True,
+            )
+
+
+def print_trade_summary():
+
+    summary = (
+        get_trade_summary()
     )
 
-    created_at = datetime.now(
-        timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M:%S"
+    total = (
+        summary["total"]
+        or 0
     )
+
+    if total == 0:
+        return
 
     print(
-        format_result(result),
+        "----- VIRTUAL TRADE STATISTICS -----",
         flush=True,
     )
 
-    saved, analysis_id = save_analysis(
-        created_at=created_at,
-        symbol=SYMBOL,
-        interval=INTERVAL,
-        result=result,
+    print(
+        f"Trades="
+        f"{total} | "
+
+        f"TP="
+        f"{summary['take_profits'] or 0} | "
+
+        f"SL="
+        f"{summary['stop_losses'] or 0} | "
+
+        f"Ambiguous="
+        f"{summary['ambiguous'] or 0} | "
+
+        f"Open="
+        f"{summary['open_trades'] or 0} | "
+
+        f"TotalPips="
+        f"{summary['total_pips'] or 0:+.2f} | "
+
+        f"AvgPips="
+        f"{summary['avg_pips'] or 0:+.2f}",
+        flush=True,
+    )
+
+
+def analyze_once():
+
+    # Exactly ONE request
+    # to Twelve Data.
+    candles = (
+        fetch_candles()
+    )
+
+    result = (
+        analyze_market(
+            candles
+        )
+    )
+
+    created_at = (
+        datetime.now(
+            timezone.utc
+        ).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    )
+
+    print(
+        format_result(
+            result
+        ),
+        flush=True,
+    )
+
+    saved, analysis_id = (
+        save_analysis(
+
+            created_at=
+                created_at,
+
+            symbol=
+                SYMBOL,
+
+            interval=
+                INTERVAL,
+
+            result=
+                result,
+        )
     )
 
     if saved:
+
         print(
             f"New candle saved | "
+
             f"Total records: "
             f"{count_records()}",
             flush=True,
         )
 
     else:
+
         print(
             f"Candle "
             f"{result['datetime']} "
@@ -148,66 +398,139 @@ def analyze_once():
             flush=True,
         )
 
-    # ВАЖНО:
-    # проверяем signal event независимо
-    # от того, новая свеча в БД или уже была.
+    # =========================
+    # SIGNAL EVENT
+    # =========================
+
     if analysis_id is not None:
 
-        created, event_id, reason = (
+        (
+            created,
+            event_id,
+            reason,
+        ) = (
             create_signal_event_if_new(
-                analysis_id=analysis_id,
-                created_at=created_at,
-                symbol=SYMBOL,
-                interval=INTERVAL,
-                result=result,
+
+                analysis_id=
+                    analysis_id,
+
+                created_at=
+                    created_at,
+
+                symbol=
+                    SYMBOL,
+
+                interval=
+                    INTERVAL,
+
+                result=
+                    result,
             )
         )
 
         if created:
+
             print(
                 "NEW SIGNAL EVENT | "
+
                 f"{result['signal']} | "
+
                 f"Entry="
                 f"{result['close']:.5f} | "
+
                 f"SetupScore="
                 f"{result['setup_score']}/100 | "
+
                 f"Total signals="
                 f"{count_signal_events()}",
                 flush=True,
             )
 
-        elif reason == "CONTINUATION":
+        elif (
+            reason
+            == "CONTINUATION"
+        ):
+
             print(
-                f"{result['signal']} setup "
-                f"continues | "
+                f"{result['signal']} "
+                f"setup continues | "
                 f"no new signal",
                 flush=True,
             )
 
-        elif reason == "ALREADY_EXISTS":
+        elif (
+            reason
+            == "ALREADY_EXISTS"
+        ):
+
             print(
                 "Signal event already exists "
                 "for this candle",
                 flush=True,
             )
 
-    outcomes = evaluate_pending_signals(
-        candles
+    # =========================
+    # CREATE MISSING TRADES
+    # =========================
+
+    new_trades = (
+        ensure_virtual_trades()
+    )
+
+    if new_trades:
+
+        print_new_virtual_trades(
+            new_trades
+        )
+
+    # =========================
+    # CHECK SL / TP
+    # =========================
+
+    trade_results = (
+        evaluate_open_trades(
+            candles
+        )
+    )
+
+    if trade_results:
+
+        print_trade_results(
+            trade_results
+        )
+
+        print_trade_summary()
+
+    # =========================
+    # OLD 15/30/60 RESEARCH
+    # =========================
+
+    outcomes = (
+        evaluate_pending_signals(
+            candles
+        )
     )
 
     if outcomes:
+
         for outcome in outcomes:
 
             print(
                 f"OUTCOME | "
+
                 f"{outcome['signal']} | "
+
                 f"Signal candle="
                 f"{outcome['signal_time']} | "
+
                 f"After="
                 f"{outcome['horizon']}m | "
+
                 f"{outcome['result']} | "
+
                 f"Pips="
                 f"{outcome['pips']:.2f} | "
+
                 f"SetupScore="
                 f"{outcome['score']}/100",
                 flush=True,
@@ -217,6 +540,7 @@ def analyze_once():
 
 
 def seconds_until_next_check():
+
     now = time.time()
 
     next_boundary = (
@@ -240,6 +564,7 @@ def seconds_until_next_check():
 
 
 def main():
+
     init_db()
 
     print(
@@ -260,6 +585,15 @@ def main():
     )
 
     print(
+        f"Virtual trades: "
+        f"{count_virtual_trades()} | "
+
+        f"Open: "
+        f"{count_open_virtual_trades()}",
+        flush=True,
+    )
+
+    print(
         f"Schedule: every "
         f"{INTERVAL}, "
         f"{CANDLE_CLOSE_DELAY_SECONDS}s "
@@ -267,10 +601,25 @@ def main():
         flush=True,
     )
 
+    # If signal events were created
+    # before this module existed,
+    # create their virtual trades now.
+    old_trades = (
+        ensure_virtual_trades()
+    )
+
+    if old_trades:
+
+        print_new_virtual_trades(
+            old_trades
+        )
+
     try:
+
         analyze_once()
 
     except Exception as error:
+
         print(
             f"ERROR: "
             f"{type(error).__name__}: "
@@ -284,9 +633,12 @@ def main():
             seconds_until_next_check()
         )
 
-        next_check = datetime.fromtimestamp(
-            time.time() + wait_seconds,
-            tz=timezone.utc,
+        next_check = (
+            datetime.fromtimestamp(
+                time.time()
+                + wait_seconds,
+                tz=timezone.utc,
+            )
         )
 
         print(
@@ -300,9 +652,11 @@ def main():
         )
 
         try:
+
             analyze_once()
 
         except Exception as error:
+
             print(
                 f"ERROR: "
                 f"{type(error).__name__}: "
