@@ -49,9 +49,7 @@ CANDLE_CLOSE_DELAY_SECONDS = 15
 
 
 def interval_to_seconds(interval):
-
     if interval.endswith("min"):
-
         return (
             int(
                 interval.replace(
@@ -63,7 +61,6 @@ def interval_to_seconds(interval):
         )
 
     if interval.endswith("h"):
-
         return (
             int(
                 interval.replace(
@@ -88,9 +85,10 @@ INTERVAL_SECONDS = (
 
 
 def format_result(result):
-
     return (
-        f"[{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}] "
+        f"["
+        f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        f"] "
 
         f"{SYMBOL} {INTERVAL} | "
 
@@ -138,11 +136,10 @@ def format_result(result):
 
 
 def print_new_virtual_trades(
-    trades
+    trades,
+    candles,
 ):
-
     for trade in trades:
-
         print(
             "VIRTUAL TRADE V2 OPENED | "
 
@@ -178,21 +175,19 @@ def print_new_virtual_trades(
         )
 
         send_trade_opened(
-            trade
+            trade,
+            candles,
         )
 
 
 def print_trade_results(
     results
 ):
-
     for trade in results:
-
         if (
             trade["result"]
             == "AMBIGUOUS"
         ):
-
             print(
                 "VIRTUAL TRADE V2 RESULT | "
 
@@ -209,7 +204,6 @@ def print_trade_results(
             )
 
         else:
-
             print(
                 "VIRTUAL TRADE V2 CLOSED | "
 
@@ -240,7 +234,6 @@ def print_trade_results(
 
 
 def print_trade_summary():
-
     summary = (
         get_trade_summary()
     )
@@ -290,7 +283,6 @@ def print_trade_summary():
 
 
 def print_outcome_summary():
-
     summary = (
         get_outcome_summary()
     )
@@ -304,7 +296,6 @@ def print_outcome_summary():
     )
 
     for row in summary:
-
         total = row["total"]
 
         wins = (
@@ -343,7 +334,6 @@ def print_outcome_summary():
 
 
 def analyze_once():
-
     candles = (
         fetch_candles()
     )
@@ -371,33 +361,22 @@ def analyze_once():
 
     saved, analysis_id = (
         save_analysis(
-
-            created_at=
-                created_at,
-
-            symbol=
-                SYMBOL,
-
-            interval=
-                INTERVAL,
-
-            result=
-                result,
+            created_at=created_at,
+            symbol=SYMBOL,
+            interval=INTERVAL,
+            result=result,
         )
     )
 
     if saved:
-
         print(
             f"New candle saved | "
-
             f"Total records: "
             f"{count_records()}",
             flush=True,
         )
 
     else:
-
         print(
             f"Candle "
             f"{result['datetime']} "
@@ -406,33 +385,21 @@ def analyze_once():
         )
 
     if analysis_id is not None:
-
         (
             created,
             event_id,
             reason,
         ) = (
             create_signal_event_if_new(
-
-                analysis_id=
-                    analysis_id,
-
-                created_at=
-                    created_at,
-
-                symbol=
-                    SYMBOL,
-
-                interval=
-                    INTERVAL,
-
-                result=
-                    result,
+                analysis_id=analysis_id,
+                created_at=created_at,
+                symbol=SYMBOL,
+                interval=INTERVAL,
+                result=result,
             )
         )
 
         if created:
-
             print(
                 "NEW SIGNAL EVENT | "
 
@@ -453,7 +420,6 @@ def analyze_once():
             reason
             == "CONTINUATION"
         ):
-
             print(
                 f"{result['signal']} "
                 f"setup continues | "
@@ -466,9 +432,9 @@ def analyze_once():
     )
 
     if new_trades:
-
         print_new_virtual_trades(
-            new_trades
+            new_trades,
+            candles,
         )
 
     trade_results = (
@@ -478,7 +444,6 @@ def analyze_once():
     )
 
     if trade_results:
-
         print_trade_results(
             trade_results
         )
@@ -492,9 +457,7 @@ def analyze_once():
     )
 
     if outcomes:
-
         for outcome in outcomes:
-
             print(
                 f"OUTCOME | "
 
@@ -520,7 +483,6 @@ def analyze_once():
 
 
 def seconds_until_next_check():
-
     now = time.time()
 
     next_boundary = (
@@ -544,7 +506,6 @@ def seconds_until_next_check():
 
 
 def main():
-
     init_db()
 
     print(
@@ -582,11 +543,9 @@ def main():
     )
 
     try:
-
         analyze_once()
 
     except Exception as error:
-
         print(
             f"ERROR: "
             f"{type(error).__name__}: "
@@ -595,7 +554,6 @@ def main():
         )
 
     while True:
-
         wait_seconds = (
             seconds_until_next_check()
         )
@@ -619,11 +577,9 @@ def main():
         )
 
         try:
-
             analyze_once()
 
         except Exception as error:
-
             print(
                 f"ERROR: "
                 f"{type(error).__name__}: "
