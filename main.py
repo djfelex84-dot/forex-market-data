@@ -50,6 +50,11 @@ from daily_report import (
     send_daily_report_if_due,
 )
 
+from weekly_report import (
+    init_weekly_report_table,
+    send_weekly_report_if_due,
+)
+
 from economic_calendar import (
     init_economic_calendar,
     process_economic_calendar,
@@ -673,6 +678,17 @@ def analyze_once():
         )
 
     try:
+        send_weekly_report_if_due()
+
+    except Exception as error:
+        print(
+            "WEEKLY REPORT ERROR | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+    try:
         process_economic_calendar()
 
     except Exception as error:
@@ -711,6 +727,8 @@ def main():
     init_db()
 
     init_daily_report_table()
+
+    init_weekly_report_table()
 
     init_economic_calendar()
 
@@ -758,6 +776,13 @@ def main():
     print(
         "Daily report: "
         "00:05 UTC for previous day -> "
+        "Free channel",
+        flush=True,
+    )
+
+    print(
+        "Weekly report: "
+        "Monday 00:10 UTC for previous week -> "
         "Free channel",
         flush=True,
     )
