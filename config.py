@@ -47,17 +47,29 @@ OUTCOME_HORIZONS_MINUTES = (
 )
 
 
-# EUR/USD:
+# EUR/USD
 # 1 pip = 0.0001
 PIP_SIZE = 0.0001
 
 
 # =========================
-# VIRTUAL TRADE
+# VIRTUAL TRADE MODEL V2
 # =========================
 
-# Stop Loss = 1 ATR
+TRADE_MODEL_VERSION = "V2"
+
+# SL based on volatility
 STOP_LOSS_ATR_MULTIPLIER = 1.0
 
-# Take Profit = 1.5 ATR
-TAKE_PROFIT_ATR_MULTIPLIER = 1.5
+# But never smaller than this.
+MIN_STOP_PIPS = 5.0
+
+# TP = risk * 1.5
+TAKE_PROFIT_R_MULTIPLE = 1.5
+
+# Temporary test assumption.
+# Later replaced with broker data.
+ASSUMED_SPREAD_PIPS = 1.0
+
+# Maximum trade duration.
+MAX_TRADE_MINUTES = 180
