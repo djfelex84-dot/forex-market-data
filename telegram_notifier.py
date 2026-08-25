@@ -303,7 +303,8 @@ def format_max_trade_time(minutes):
 
 
 def build_trade_opened_text(
-    trade
+    trade,
+    test_mode=False,
 ):
     direction_icon = (
         get_direction_icon(
@@ -348,7 +349,7 @@ def build_trade_opened_text(
         )
     )
 
-    return (
+    text = (
         f"{direction_icon} "
         f"<b>{trade['symbol']} · "
         f"{trade['signal']}</b>\n"
@@ -376,20 +377,35 @@ def build_trade_opened_text(
         f"<b>{max_trade_time}</b>\n"
         "\n"
         f"🕒 Signal time: "
-        f"<b>{signal_time}</b>\n"
-        "\n"
-        "<i>Test signal · "
-        "simulated execution</i>"
+        f"<b>{signal_time}</b>"
     )
+
+    if test_mode:
+        text += (
+            "\n"
+            "\n"
+            "<i>Test signal · "
+            "simulated execution</i>"
+        )
+
+    return text
 
 
 def send_trade_opened(
     trade,
     candles,
 ):
-    text = (
+    test_text = (
         build_trade_opened_text(
-            trade
+            trade,
+            test_mode=True,
+        )
+    )
+
+    vip_text = (
+        build_trade_opened_text(
+            trade,
+            test_mode=False,
         )
     )
 
@@ -414,7 +430,7 @@ def send_trade_opened(
         # =========================
 
         test_sent = send_photo(
-            caption=text,
+            caption=test_text,
             image_buffer=image_buffer,
         )
 
@@ -427,7 +443,7 @@ def send_trade_opened(
             )
 
             test_sent = send_message(
-                text
+                test_text
             )
 
         # =========================
@@ -435,7 +451,7 @@ def send_trade_opened(
         # =========================
 
         vip_sent = send_vip_photo(
-            caption=text,
+            caption=vip_text,
             image_buffer=image_buffer,
         )
 
@@ -448,7 +464,7 @@ def send_trade_opened(
             )
 
             vip_sent = send_vip_message(
-                text
+                vip_text
             )
 
     except Exception as error:
@@ -461,12 +477,12 @@ def send_trade_opened(
 
         if not test_sent:
             test_sent = send_message(
-                text
+                test_text
             )
 
         if not vip_sent:
             vip_sent = send_vip_message(
-                text
+                vip_text
             )
 
     finally:
@@ -485,7 +501,7 @@ def send_trade_opened(
         print(
             "SIGNAL SENT | "
             f"{trade['symbol']} | "
-            "VIP MIRROR",
+            "VIP",
             flush=True,
         )
 
@@ -496,7 +512,8 @@ def send_trade_opened(
 
 
 def build_trade_closed_text(
-    trade
+    trade,
+    test_mode=False,
 ):
     result = trade[
         "result"
@@ -533,7 +550,7 @@ def build_trade_closed_text(
         title = "RESULT UNCLEAR"
 
     if result == "AMBIGUOUS":
-        return (
+        text = (
             f"{icon} <b>{title}</b>\n"
             "\n"
             f"{direction_icon} "
@@ -550,69 +567,82 @@ def build_trade_closed_text(
             "OHLC data.\n"
             "\n"
             f"🕒 Result confirmed: "
-            f"<b>{result_confirmed}</b>\n"
+            f"<b>{result_confirmed}</b>"
+        )
+
+    else:
+        net_pips = (
+            trade[
+                "net_pips"
+            ]
+        )
+
+        r_value = (
+            trade[
+                "r"
+            ]
+        )
+
+        if net_pips > 0:
+            pnl_icon = "🟢"
+
+        elif net_pips < 0:
+            pnl_icon = "🔴"
+
+        else:
+            pnl_icon = "⚪"
+
+        text = (
+            f"{icon} <b>{title}</b>\n"
+            "\n"
+            f"{direction_icon} "
+            f"<b>{trade['symbol']} · "
+            f"{trade['signal']}</b>\n"
+            "\n"
+            f"{pnl_icon} Net result: "
+            f"<b>{net_pips:+.2f} "
+            f"pips</b>\n"
+            f"📊 Result: "
+            f"<b>{r_value:+.2f}R</b>\n"
+            "\n"
+            f"🕒 Result confirmed: "
+            f"<b>{result_confirmed}</b>"
+        )
+
+    if test_mode:
+        text += (
+            "\n"
             "\n"
             "<i>Test signal · "
             "simulated execution</i>"
         )
 
-    net_pips = (
-        trade[
-            "net_pips"
-        ]
-    )
-
-    r_value = (
-        trade[
-            "r"
-        ]
-    )
-
-    if net_pips > 0:
-        pnl_icon = "🟢"
-
-    elif net_pips < 0:
-        pnl_icon = "🔴"
-
-    else:
-        pnl_icon = "⚪"
-
-    return (
-        f"{icon} <b>{title}</b>\n"
-        "\n"
-        f"{direction_icon} "
-        f"<b>{trade['symbol']} · "
-        f"{trade['signal']}</b>\n"
-        "\n"
-        f"{pnl_icon} Net result: "
-        f"<b>{net_pips:+.2f} "
-        f"pips</b>\n"
-        f"📊 Result: "
-        f"<b>{r_value:+.2f}R</b>\n"
-        "\n"
-        f"🕒 Result confirmed: "
-        f"<b>{result_confirmed}</b>\n"
-        "\n"
-        "<i>Test signal · "
-        "simulated execution</i>"
-    )
+    return text
 
 
 def send_trade_closed(
     trade
 ):
-    text = (
+    test_text = (
         build_trade_closed_text(
-            trade
+            trade,
+            test_mode=True,
+        )
+    )
+
+    vip_text = (
+        build_trade_closed_text(
+            trade,
+            test_mode=False,
         )
     )
 
     test_sent = send_message(
-        text
+        test_text
     )
 
     vip_sent = send_vip_message(
-        text
+        vip_text
     )
 
     if test_sent:
@@ -627,7 +657,7 @@ def send_trade_closed(
         print(
             "RESULT SENT | "
             f"{trade['symbol']} | "
-            "VIP MIRROR",
+            "VIP",
             flush=True,
         )
 
