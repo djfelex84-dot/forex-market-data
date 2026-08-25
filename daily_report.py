@@ -195,11 +195,6 @@ def get_daily_statistics(
         "%Y-%m-%d",
     ).date()
 
-    # We read a slightly wider raw
-    # candle-time window because
-    # candle_time stores candle OPEN
-    # time, while reports use the
-    # actual candle CLOSE time.
     window_start = (
         datetime.combine(
             report_day,
@@ -269,10 +264,6 @@ def get_daily_statistics(
                 window_end,
             ),
         ).fetchall()
-
-    # =========================
-    # CLOSED TRADES
-    # =========================
 
     for trade in trades:
         closed_at = effective_time(
@@ -346,10 +337,6 @@ def get_daily_statistics(
 
             stats["r_count"] += 1
 
-    # =========================
-    # SIGNALS
-    # =========================
-
     for signal in signals:
         signal_at = effective_time(
             signal["candle_time"],
@@ -366,10 +353,6 @@ def get_daily_statistics(
 
         stats["signals"] += 1
 
-    # =========================
-    # AVERAGES
-    # =========================
-
     for stats in (
         stats_by_symbol.values()
     ):
@@ -378,10 +361,6 @@ def get_daily_statistics(
                 stats["total_r"]
                 / stats["r_count"]
             )
-
-    # =========================
-    # ALL MARKETS TOTAL
-    # =========================
 
     total = empty_symbol_stats()
 
@@ -527,8 +506,6 @@ def build_daily_report(
             empty_symbol_stats(),
         )
 
-        # Do not fill the report with
-        # an inactive market section.
         if (
             symbol_stats["trades"] == 0
             and symbol_stats["signals"] == 0
@@ -588,7 +565,10 @@ def build_daily_report(
     lines.extend(
         [
             "",
-            "🕒 <b>All times UTC</b>",
+            (
+                "🕒 <b>Report period: "
+                "00:00–23:59 UTC</b>"
+            ),
             "",
             (
                 "<i>Transparent V2 simulated "
@@ -703,9 +683,6 @@ def send_daily_report_if_due():
         report_date
     )
 
-    # No signals and no completed
-    # trades = nothing useful to
-    # publish in the public channel.
     if not has_daily_activity(
         stats
     ):
