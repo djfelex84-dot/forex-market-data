@@ -144,66 +144,6 @@ def format_result(result):
     )
 
 
-def print_outcome_summary():
-
-    summary = (
-        get_outcome_summary()
-    )
-
-    if not summary:
-        return
-
-    print(
-        "----- SIGNAL EVENT STATISTICS -----",
-        flush=True,
-    )
-
-    for row in summary:
-
-        total = row["total"]
-
-        wins = (
-            row["wins"] or 0
-        )
-
-        win_rate = (
-            wins
-            / total
-            * 100
-
-            if total
-            else 0
-        )
-
-        avg_pips = (
-            row["avg_pips"]
-            or 0
-        )
-
-        print(
-            f"{row['horizon_minutes']}m | "
-
-            f"Signals="
-            f"{total} | "
-
-            f"Wins="
-            f"{wins} | "
-
-            f"Losses="
-            f"{row['losses'] or 0} | "
-
-            f"Flat="
-            f"{row['flat'] or 0} | "
-
-            f"WinRate="
-            f"{win_rate:.1f}% | "
-
-            f"AvgPips="
-            f"{avg_pips:.2f}",
-            flush=True,
-        )
-
-
 def print_new_virtual_trades(
     trades
 ):
@@ -211,7 +151,7 @@ def print_new_virtual_trades(
     for trade in trades:
 
         print(
-            "VIRTUAL TRADE OPENED | "
+            "VIRTUAL TRADE V2 OPENED | "
 
             f"ID="
             f"{trade['id']} | "
@@ -233,8 +173,14 @@ def print_new_virtual_trades(
             f"Reward="
             f"{trade['reward_pips']:.2f} pips | "
 
+            f"Spread="
+            f"{trade['spread_pips']:.2f} pips | "
+
             f"R:R=1:"
-            f"{trade['reward_pips'] / trade['risk_pips']:.2f}",
+            f"{trade['reward_pips'] / trade['risk_pips']:.2f} | "
+
+            f"MaxHold="
+            f"{trade['max_hold_minutes']}m",
             flush=True,
         )
 
@@ -251,7 +197,7 @@ def print_trade_results(
         ):
 
             print(
-                "VIRTUAL TRADE RESULT | "
+                "VIRTUAL TRADE V2 RESULT | "
 
                 f"ID="
                 f"{trade['trade_id']} | "
@@ -261,17 +207,14 @@ def print_trade_results(
                 f"AMBIGUOUS | "
 
                 f"Candle="
-                f"{trade['candle_time']} | "
-
-                f"SL and TP touched "
-                f"in same candle",
+                f"{trade['candle_time']}",
                 flush=True,
             )
 
         else:
 
             print(
-                "VIRTUAL TRADE CLOSED | "
+                "VIRTUAL TRADE V2 CLOSED | "
 
                 f"ID="
                 f"{trade['trade_id']} | "
@@ -280,8 +223,14 @@ def print_trade_results(
 
                 f"{trade['result']} | "
 
-                f"Pips="
-                f"{trade['pips']:+.2f} | "
+                f"Gross="
+                f"{trade['gross_pips']:+.2f} pips | "
+
+                f"Net="
+                f"{trade['net_pips']:+.2f} pips | "
+
+                f"R="
+                f"{trade['r']:+.2f}R | "
 
                 f"Candle="
                 f"{trade['candle_time']}",
@@ -304,7 +253,7 @@ def print_trade_summary():
         return
 
     print(
-        "----- VIRTUAL TRADE STATISTICS -----",
+        "----- VIRTUAL TRADE V2 STATISTICS -----",
         flush=True,
     )
 
@@ -318,25 +267,83 @@ def print_trade_summary():
         f"SL="
         f"{summary['stop_losses'] or 0} | "
 
+        f"Timeout="
+        f"{summary['timeouts'] or 0} | "
+
         f"Ambiguous="
         f"{summary['ambiguous'] or 0} | "
 
         f"Open="
         f"{summary['open_trades'] or 0} | "
 
-        f"TotalPips="
-        f"{summary['total_pips'] or 0:+.2f} | "
+        f"NetPips="
+        f"{summary['total_net_pips'] or 0:+.2f} | "
 
-        f"AvgPips="
-        f"{summary['avg_pips'] or 0:+.2f}",
+        f"AvgNet="
+        f"{summary['avg_net_pips'] or 0:+.2f} | "
+
+        f"AvgR="
+        f"{summary['avg_r'] or 0:+.2f}R",
         flush=True,
     )
 
 
+def print_outcome_summary():
+
+    summary = (
+        get_outcome_summary()
+    )
+
+    if not summary:
+        return
+
+    print(
+        "----- 15/30/60 RESEARCH -----",
+        flush=True,
+    )
+
+    for row in summary:
+
+        total = row["total"]
+
+        wins = (
+            row["wins"]
+            or 0
+        )
+
+        win_rate = (
+            wins / total * 100
+            if total
+            else 0
+        )
+
+        print(
+            f"{row['horizon_minutes']}m | "
+
+            f"Signals="
+            f"{total} | "
+
+            f"Wins="
+            f"{wins} | "
+
+            f"Losses="
+            f"{row['losses'] or 0} | "
+
+            f"Flat="
+            f"{row['flat'] or 0} | "
+
+            f"WinRate="
+            f"{win_rate:.1f}% | "
+
+            f"AvgPips="
+            f"{row['avg_pips'] or 0:.2f}",
+            flush=True,
+        )
+
+
 def analyze_once():
 
-    # Exactly ONE request
-    # to Twelve Data.
+    # ONE Twelve Data request.
     candles = (
         fetch_candles()
     )
@@ -398,10 +405,6 @@ def analyze_once():
             flush=True,
         )
 
-    # =========================
-    # SIGNAL EVENT
-    # =========================
-
     if analysis_id is not None:
 
         (
@@ -458,21 +461,9 @@ def analyze_once():
                 flush=True,
             )
 
-        elif (
-            reason
-            == "ALREADY_EXISTS"
-        ):
-
-            print(
-                "Signal event already exists "
-                "for this candle",
-                flush=True,
-            )
-
-    # =========================
-    # CREATE MISSING TRADES
-    # =========================
-
+    # Create V2 trade only
+    # for signal events that do not
+    # already have a trade.
     new_trades = (
         ensure_virtual_trades()
     )
@@ -482,10 +473,6 @@ def analyze_once():
         print_new_virtual_trades(
             new_trades
         )
-
-    # =========================
-    # CHECK SL / TP
-    # =========================
 
     trade_results = (
         evaluate_open_trades(
@@ -500,10 +487,6 @@ def analyze_once():
         )
 
         print_trade_summary()
-
-    # =========================
-    # OLD 15/30/60 RESEARCH
-    # =========================
 
     outcomes = (
         evaluate_pending_signals(
@@ -585,7 +568,7 @@ def main():
     )
 
     print(
-        f"Virtual trades: "
+        f"Virtual trades V2: "
         f"{count_virtual_trades()} | "
 
         f"Open: "
@@ -600,19 +583,6 @@ def main():
         f"after candle boundary",
         flush=True,
     )
-
-    # If signal events were created
-    # before this module existed,
-    # create their virtual trades now.
-    old_trades = (
-        ensure_virtual_trades()
-    )
-
-    if old_trades:
-
-        print_new_virtual_trades(
-            old_trades
-        )
 
     try:
 
