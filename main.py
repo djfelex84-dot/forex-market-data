@@ -49,6 +49,11 @@ from daily_report import (
     send_daily_report_if_due,
 )
 
+from economic_calendar import (
+    init_economic_calendar,
+    process_economic_calendar,
+)
+
 
 CANDLE_CLOSE_DELAY_SECONDS = 15
 
@@ -488,6 +493,8 @@ def analyze_once():
 
     send_daily_report_if_due()
 
+    process_economic_calendar()
+
 
 def seconds_until_next_check():
     now = time.time()
@@ -514,7 +521,10 @@ def seconds_until_next_check():
 
 def main():
     init_db()
+
     init_daily_report_table()
+
+    init_economic_calendar()
 
     print(
         "Forex analysis engine started",
@@ -553,6 +563,13 @@ def main():
     print(
         "Daily report: "
         "23:55 UTC -> "
+        "Free channel",
+        flush=True,
+    )
+
+    print(
+        "Economic calendar: "
+        "High Impact -> "
         "Free channel",
         flush=True,
     )
