@@ -1,21 +1,33 @@
 import os
 
-TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY")
+
+TWELVE_DATA_API_KEY = os.getenv(
+    "TWELVE_DATA_API_KEY"
+)
+
 
 SYMBOL = "EUR/USD"
 INTERVAL = "5min"
 
+
 EMA_FAST = 20
 EMA_SLOW = 50
+
 RSI_PERIOD = 14
 ATR_PERIOD = 14
+
 
 CANDLE_LIMIT = 120
 CHECK_INTERVAL_SECONDS = 300
 
-# Strategy filters
+
+# =========================
+# STRATEGY FILTERS
+# =========================
+
 MIN_EMA_DISTANCE_ATR = 0.15
 MIN_ATR = 0.00010
+
 
 RSI_BUY_MIN = 52
 RSI_BUY_MAX = 68
@@ -23,8 +35,29 @@ RSI_BUY_MAX = 68
 RSI_SELL_MIN = 32
 RSI_SELL_MAX = 48
 
-# Signal evaluation
-OUTCOME_HORIZONS_MINUTES = (15, 30, 60)
 
-# EUR/USD: 1 pip = 0.0001
+# =========================
+# SIGNAL EVALUATION
+# =========================
+
+OUTCOME_HORIZONS_MINUTES = (
+    15,
+    30,
+    60,
+)
+
+
+# EUR/USD:
+# 1 pip = 0.0001
 PIP_SIZE = 0.0001
+
+
+# =========================
+# VIRTUAL TRADE
+# =========================
+
+# Stop Loss = 1 ATR
+STOP_LOSS_ATR_MULTIPLIER = 1.0
+
+# Take Profit = 1.5 ATR
+TAKE_PROFIT_ATR_MULTIPLIER = 1.5
