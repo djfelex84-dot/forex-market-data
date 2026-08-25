@@ -87,6 +87,10 @@ from research_15m_trades import (
     process_15m_trade_research,
 )
 
+from user_subscriptions import (
+    init_user_subscription_tables,
+)
+
 
 CANDLE_CLOSE_DELAY_SECONDS = 15
 
@@ -787,21 +791,6 @@ def analyze_symbol(
             symbol
         )
 
-    # =========================
-    # 15 MINUTE RESEARCH
-    # =========================
-    #
-    # Uses the same already-fetched
-    # 5-minute candles.
-    #
-    # No extra Twelve Data request.
-    #
-    # After enough candles are
-    # available, 15m virtual trades
-    # are evaluated separately.
-    #
-    # No Telegram publication.
-
     process_research_15m(
         symbol,
         candles,
@@ -933,6 +922,8 @@ def main():
 
     init_15m_trade_tables()
 
+    init_user_subscription_tables()
+
     print(
         "Multi-market analysis engine started",
         flush=True,
@@ -1031,6 +1022,11 @@ def main():
     print(
         "15m trade research: "
         "virtual execution enabled",
+        flush=True,
+    )
+
+    print(
+        "User system: database ready",
         flush=True,
     )
 
