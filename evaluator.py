@@ -1,4 +1,8 @@
-from datetime import datetime, timedelta, timezone
+from datetime import (
+    datetime,
+    timedelta,
+    timezone,
+)
 
 from config import (
     OUTCOME_HORIZONS_MINUTES,
@@ -6,9 +10,9 @@ from config import (
 )
 
 from storage import (
-    get_pending_signals,
+    get_pending_signal_events,
     outcome_exists,
-    save_signal_outcome,
+    save_signal_event_outcome,
 )
 
 
@@ -24,7 +28,9 @@ def evaluate_pending_signals(candles):
 
     evaluated = []
 
-    signals = get_pending_signals()
+    signals = (
+        get_pending_signal_events()
+    )
 
     for signal in signals:
 
@@ -33,30 +39,41 @@ def evaluate_pending_signals(candles):
             TIME_FORMAT,
         )
 
-        entry_price = float(signal["close"])
+        entry_price = float(
+            signal["entry_price"]
+        )
+
         direction = signal["signal"]
 
-        for horizon in OUTCOME_HORIZONS_MINUTES:
+        for horizon in (
+            OUTCOME_HORIZONS_MINUTES
+        ):
 
             if outcome_exists(
-                signal["id"],
+                signal["signal_event_id"],
                 horizon,
             ):
                 continue
 
-            target_time = signal_time + timedelta(
-                minutes=horizon
+            target_time = (
+                signal_time
+                + timedelta(
+                    minutes=horizon
+                )
             )
 
-            target_key = target_time.strftime(
-                TIME_FORMAT
+            target_key = (
+                target_time.strftime(
+                    TIME_FORMAT
+                )
             )
 
-            target_candle = candle_map.get(
-                target_key
+            target_candle = (
+                candle_map.get(
+                    target_key
+                )
             )
 
-            # Нужная свеча ещё не появилась
             if target_candle is None:
                 continue
 
@@ -65,23 +82,27 @@ def evaluate_pending_signals(candles):
             )
 
             if direction == "BUY":
+
                 directional_change = (
-                    target_close - entry_price
+                    target_close
+                    - entry_price
                 )
 
             elif direction == "SELL":
+
                 directional_change = (
-                    entry_price - target_close
+                    entry_price
+                    - target_close
                 )
 
             else:
                 continue
 
             directional_pips = (
-                directional_change / PIP_SIZE
+                directional_change
+                / PIP_SIZE
             )
 
-            # Маленькая защита от погрешности float
             if directional_pips > 0.05:
                 outcome = "WIN"
 
@@ -91,35 +112,62 @@ def evaluate_pending_signals(candles):
             else:
                 outcome = "FLAT"
 
-            evaluated_at = datetime.now(
-                timezone.utc
-            ).strftime(TIME_FORMAT)
+            evaluated_at = (
+                datetime.now(
+                    timezone.utc
+                ).strftime(
+                    TIME_FORMAT
+                )
+            )
 
-            save_signal_outcome(
-                analysis_id=signal["id"],
-                horizon_minutes=horizon,
+            save_signal_event_outcome(
+                signal_event_id=
+                    signal[
+                        "signal_event_id"
+                    ],
 
-                target_candle_time=target_key,
-                target_close=target_close,
+                horizon_minutes=
+                    horizon,
 
-                directional_pips=directional_pips,
-                result=outcome,
+                target_candle_time=
+                    target_key,
 
-                evaluated_at=evaluated_at,
+                target_close=
+                    target_close,
+
+                directional_pips=
+                    directional_pips,
+
+                result=
+                    outcome,
+
+                evaluated_at=
+                    evaluated_at,
             )
 
             evaluated.append(
                 {
-                    "signal": direction,
-                    "signal_time": signal[
-                        "candle_time"
-                    ],
-                    "horizon": horizon,
-                    "pips": directional_pips,
-                    "result": outcome,
-                    "score": signal[
-                        "setup_score"
-                    ],
+                    "signal":
+                        direction,
+
+                    "signal_time":
+                        signal[
+                            "candle_time"
+                        ],
+
+                    "horizon":
+                        horizon,
+
+                    "pips":
+                        directional_pips,
+
+                    "result":
+                        outcome,
+
+                    "score":
+                        signal[
+                            "setup_score"
+                        ],
                 }
             )
 
