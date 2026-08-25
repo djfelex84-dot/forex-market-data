@@ -3,8 +3,6 @@ from datetime import datetime, timedelta
 
 import requests
 
-from config import SYMBOL
-
 from trade_chart import (
     create_trade_chart,
 )
@@ -240,7 +238,7 @@ def build_trade_opened_text(
 
     return (
         f"{direction_icon} "
-        f"<b>{SYMBOL} · "
+        f"<b>{trade['symbol']} · "
         f"{trade['signal']}</b>\n"
         "\n"
         "✅ <b>SIGNAL ACTIVE</b>\n"
@@ -290,7 +288,7 @@ def send_trade_opened(
             create_trade_chart(
                 candles=candles,
                 trade=trade,
-                symbol=SYMBOL,
+                symbol=trade["symbol"],
             )
         )
 
@@ -360,7 +358,7 @@ def send_trade_closed(trade):
             f"{icon} <b>{title}</b>\n"
             "\n"
             f"{direction_icon} "
-            f"<b>{SYMBOL} · "
+            f"<b>{trade['symbol']} · "
             f"{trade['signal']}</b>\n"
             "\n"
             "SL and TP were reached "
@@ -400,7 +398,7 @@ def send_trade_closed(trade):
             f"{icon} <b>{title}</b>\n"
             "\n"
             f"{direction_icon} "
-            f"<b>{SYMBOL} · "
+            f"<b>{trade['symbol']} · "
             f"{trade['signal']}</b>\n"
             "\n"
             f"{pnl_icon} Net result: "
