@@ -6,8 +6,13 @@ import requests
 from config import SYMBOL
 
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
+BOT_TOKEN = os.getenv(
+    "TELEGRAM_BOT_TOKEN"
+)
+
+CHANNEL_ID = os.getenv(
+    "TELEGRAM_CHANNEL_ID"
+)
 
 API_URL = (
     f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -19,7 +24,8 @@ API_URL = (
 def send_message(text):
     if not BOT_TOKEN or not CHANNEL_ID:
         print(
-            "TELEGRAM WARNING: token or channel ID is missing",
+            "TELEGRAM WARNING: "
+            "token or channel ID is missing",
             flush=True,
         )
         return False
@@ -48,7 +54,8 @@ def send_message(text):
     except Exception as error:
         print(
             f"TELEGRAM ERROR: "
-            f"{type(error).__name__}: {error}",
+            f"{type(error).__name__}: "
+            f"{error}",
             flush=True,
         )
         return False
@@ -57,7 +64,14 @@ def send_message(text):
 def send_trade_opened(trade):
     now = datetime.now(
         timezone.utc
-    ).strftime("%Y-%m-%d %H:%M UTC")
+    ).strftime(
+        "%Y-%m-%d %H:%M UTC"
+    )
+
+    rr = (
+        trade["reward_pips"]
+        / trade["risk_pips"]
+    )
 
     text = (
         "🔔 NEW SIGNAL\n\n"
@@ -68,8 +82,7 @@ def send_trade_opened(trade):
         f"Take Profit: {trade['take_profit']:.5f}\n"
         f"Risk: {trade['risk_pips']:.2f} pips\n"
         f"Reward: {trade['reward_pips']:.2f} pips\n"
-        f"R:R: 1:"
-        f"{trade['reward_pips'] / trade['risk_pips']:.2f}\n"
+        f"R:R: 1:{rr:.2f}\n"
         f"Spread model: {trade['spread_pips']:.2f} pips\n"
         f"Max hold: {trade['max_hold_minutes']} min\n"
         f"Published: {now}\n\n"
@@ -77,13 +90,17 @@ def send_trade_opened(trade):
         "Profit is not guaranteed."
     )
 
-    return send_message(text)
+    return send_message(
+        text
+    )
 
 
 def send_trade_closed(trade):
     now = datetime.now(
         timezone.utc
-    ).strftime("%Y-%m-%d %H:%M UTC")
+    ).strftime(
+        "%Y-%m-%d %H:%M UTC"
+    )
 
     result = trade["result"]
 
@@ -100,6 +117,7 @@ def send_trade_closed(trade):
         icon = "⚠️"
 
     if result == "AMBIGUOUS":
+
         text = (
             f"{icon} TRADE RESULT\n\n"
             f"Pair: {SYMBOL}\n"
@@ -112,6 +130,7 @@ def send_trade_closed(trade):
         )
 
     else:
+
         text = (
             f"{icon} TRADE CLOSED\n\n"
             f"Pair: {SYMBOL}\n"
@@ -124,4 +143,6 @@ def send_trade_closed(trade):
             f"Published: {now}"
         )
 
-    return send_message(text)
+    return send_message(
+        text
+    )
