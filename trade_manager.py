@@ -1,899 +1,1107 @@
-import time
-
 from datetime import (
     datetime,
+    timedelta,
     timezone,
 )
 
 from config import (
-    SYMBOLS,
-    INTERVAL,
-)
-
-from market_data import (
-    fetch_candles,
-)
-
-from strategy import (
-    analyze_market,
+    STOP_LOSS_ATR_MULTIPLIER,
+    TAKE_PROFIT_R_MULTIPLE,
+    MAX_TRADE_MINUTES,
+    TRADE_MODEL_VERSION,
+    get_instrument_config,
 )
 
 from storage import (
-    init_db,
-    save_analysis,
-    count_records,
-    count_signal_events,
-    create_signal_event_if_new,
-    get_outcome_summary,
-    count_virtual_trades,
-    count_open_virtual_trades,
-    get_trade_summary,
-    get_excursion_summary,
-)
-
-from evaluator import (
-    evaluate_pending_signals,
-)
-
-from trade_manager import (
-    ensure_virtual_trades,
-    evaluate_open_trades,
-)
-
-from telegram_notifier import (
-    send_trade_opened,
-    send_trade_closed,
-)
-
-from daily_report import (
-    init_daily_report_table,
-    send_daily_report_if_due,
-)
-
-from weekly_report import (
-    init_weekly_report_table,
-    send_weekly_report_if_due,
-)
-
-from market_overview import (
-    init_market_overview_table,
-    process_market_overview,
-)
-
-from economic_calendar import (
-    init_economic_calendar,
-    process_economic_calendar,
-)
-
-from news_digest import (
-    init_news_digest_tables,
-    process_news_digest,
+    get_signal_events_without_trades,
+    save_virtual_trade,
+    get_open_virtual_trades,
+    update_trade_excursions,
+    close_virtual_trade,
+    interval_minutes,
 )
 
 
-CANDLE_CLOSE_DELAY_SECONDS = 15
+TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
+MAX_LIVE_SIGNAL_AGE_SECONDS = 90
 
-def interval_to_seconds(interval):
-    if interval.endswith("min"):
-        return (
-            int(
-                interval.replace(
-                    "min",
-                    "",
-                )
-            )
-            * 60
-        )
+_logged_stale_signal_ids = set()
 
-    if interval.endswith("h"):
-        return (
-            int(
-                interval.replace(
-                    "h",
-                    "",
-                )
-            )
-            * 3600
-        )
 
-    raise ValueError(
-        f"Unsupported interval: "
-        f"{interval}"
-    )
-
-
-INTERVAL_SECONDS = (
-    interval_to_seconds(
-        INTERVAL
-    )
-)
-
-
-def format_optional_pips(
-    value
-):
-    if value is None:
-        return "n/a"
-
-    return f"{float(value):.2f}"
-
-
-def format_result(
-    symbol,
-    result,
-):
-    return (
-        f"["
-        f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
-        f"] "
-
-        f"{symbol} {INTERVAL} | "
-
-        f"Candle="
-        f"{result['datetime']} | "
-
-        f"Close="
-        f"{result['close']:.5f} | "
-
-        f"EMA20="
-        f"{result['ema_fast']:.5f} | "
-
-        f"EMA50="
-        f"{result['ema_slow']:.5f} | "
-
-        f"RSI14="
-        f"{result['rsi']:.2f} | "
-
-        f"ATR14="
-        f"{result['atr']:.5f} | "
-
-        f"EMA-distance="
-        f"{result['ema_distance_atr']:.2f} ATR | "
-
-        f"EMA-direction="
-        f"{result['ema_direction']} | "
-
-        f"Trend="
-        f"{result['trend']} | "
-
-        f"Candidate="
-        f"{result['candidate']} | "
-
-        f"Signal="
-        f"{result['signal']} | "
-
-        f"Status="
-        f"{result['status']} | "
-
-        f"SetupScore="
-        f"{result['setup_score']}/100 | "
-
-        f"{result['reason']}"
-    )
-
-
-def print_new_virtual_trades(
-    trades,
-    candles,
-):
-    for trade in trades:
-        print(
-            "VIRTUAL TRADE V2 OPENED | "
-
-            f"{trade['symbol']} | "
-
-            f"ID="
-            f"{trade['id']} | "
-
-            f"{trade['signal']} | "
-
-            f"Entry="
-            f"{trade['entry']:.5f} | "
-
-            f"SL="
-            f"{trade['stop_loss']:.5f} | "
-
-            f"TP="
-            f"{trade['take_profit']:.5f} | "
-
-            f"Risk="
-            f"{trade['risk_pips']:.2f} pips | "
-
-            f"Reward="
-            f"{trade['reward_pips']:.2f} pips | "
-
-            f"Spread="
-            f"{trade['spread_pips']:.2f} pips | "
-
-            f"R:R=1:"
-            f"{trade['reward_pips'] / trade['risk_pips']:.2f} | "
-
-            f"MaxHold="
-            f"{trade['max_hold_minutes']}m",
-            flush=True,
-        )
-
-        send_trade_opened(
-            trade,
-            candles,
-        )
-
-
-def print_trade_results(
-    results
-):
-    for trade in results:
-        mae = format_optional_pips(
-            trade.get(
-                "mae_pips"
-            )
-        )
-
-        mfe = format_optional_pips(
-            trade.get(
-                "mfe_pips"
-            )
-        )
-
-        if (
-            trade["result"]
-            == "AMBIGUOUS"
-        ):
-            print(
-                "VIRTUAL TRADE V2 RESULT | "
-
-                f"{trade['symbol']} | "
-
-                f"ID="
-                f"{trade['trade_id']} | "
-
-                f"{trade['signal']} | "
-
-                "AMBIGUOUS | "
-
-                f"MAE="
-                f"{mae} pips | "
-
-                f"MFE="
-                f"{mfe} pips | "
-
-                f"Candle="
-                f"{trade['candle_time']}",
-                flush=True,
-            )
-
-        else:
-            print(
-                "VIRTUAL TRADE V2 CLOSED | "
-
-                f"{trade['symbol']} | "
-
-                f"ID="
-                f"{trade['trade_id']} | "
-
-                f"{trade['signal']} | "
-
-                f"{trade['result']} | "
-
-                f"Gross="
-                f"{trade['gross_pips']:+.2f} pips | "
-
-                f"Net="
-                f"{trade['net_pips']:+.2f} pips | "
-
-                f"R="
-                f"{trade['r']:+.2f}R | "
-
-                f"MAE="
-                f"{mae} pips | "
-
-                f"MFE="
-                f"{mfe} pips | "
-
-                f"Candle="
-                f"{trade['candle_time']}",
-                flush=True,
-            )
-
-        send_trade_closed(
-            trade
-        )
-
-
-def print_trade_summary(
+def ensure_virtual_trades(
     symbol,
 ):
-    summary = (
-        get_trade_summary(
-            symbol=symbol
-        )
-    )
+    created_trades = []
 
-    total = (
-        summary["total"]
-        or 0
-    )
-
-    if total == 0:
-        return
-
-    print(
-        f"----- {symbol} "
-        f"VIRTUAL TRADE V2 STATISTICS -----",
-        flush=True,
-    )
-
-    print(
-        f"Trades="
-        f"{total} | "
-
-        f"TP="
-        f"{summary['take_profits'] or 0} | "
-
-        f"SL="
-        f"{summary['stop_losses'] or 0} | "
-
-        f"Timeout="
-        f"{summary['timeouts'] or 0} | "
-
-        f"Ambiguous="
-        f"{summary['ambiguous'] or 0} | "
-
-        f"Open="
-        f"{summary['open_trades'] or 0} | "
-
-        f"NetPips="
-        f"{summary['total_net_pips'] or 0:+.2f} | "
-
-        f"AvgNet="
-        f"{summary['avg_net_pips'] or 0:+.2f} | "
-
-        f"AvgR="
-        f"{summary['avg_r'] or 0:+.2f}R",
-        flush=True,
-    )
-
-
-def print_excursion_summary(
-    symbol,
-):
-    summary = (
-        get_excursion_summary(
-            symbol=symbol
-        )
-    )
-
-    if not summary:
-        return
-
-    print(
-        f"----- {symbol} "
-        f"MAE / MFE RESEARCH -----",
-        flush=True,
-    )
-
-    for row in summary:
-        avg_mae = (
-            format_optional_pips(
-                row[
-                    "avg_mae_pips"
-                ]
-            )
-        )
-
-        avg_mfe = (
-            format_optional_pips(
-                row[
-                    "avg_mfe_pips"
-                ]
-            )
-        )
-
-        max_mae = (
-            format_optional_pips(
-                row[
-                    "max_mae_pips"
-                ]
-            )
-        )
-
-        max_mfe = (
-            format_optional_pips(
-                row[
-                    "max_mfe_pips"
-                ]
-            )
-        )
-
-        print(
-            f"{row['exit_reason']} | "
-
-            f"Closed="
-            f"{row['total_closed'] or 0} | "
-
-            f"Tracked="
-            f"{row['tracked'] or 0} | "
-
-            f"AvgMAE="
-            f"{avg_mae} pips | "
-
-            f"AvgMFE="
-            f"{avg_mfe} pips | "
-
-            f"MaxMAE="
-            f"{max_mae} pips | "
-
-            f"MaxMFE="
-            f"{max_mfe} pips",
-            flush=True,
-        )
-
-
-def print_outcome_summary(
-    symbol,
-):
-    summary = (
-        get_outcome_summary(
-            symbol=symbol
-        )
-    )
-
-    if not summary:
-        return
-
-    print(
-        f"----- {symbol} "
-        f"15/30/60 RESEARCH -----",
-        flush=True,
-    )
-
-    for row in summary:
-        total = row["total"]
-
-        wins = (
-            row["wins"]
-            or 0
-        )
-
-        win_rate = (
-            wins / total * 100
-            if total
-            else 0
-        )
-
-        print(
-            f"{row['horizon_minutes']}m | "
-
-            f"Signals="
-            f"{total} | "
-
-            f"Wins="
-            f"{wins} | "
-
-            f"Losses="
-            f"{row['losses'] or 0} | "
-
-            f"Flat="
-            f"{row['flat'] or 0} | "
-
-            f"WinRate="
-            f"{win_rate:.1f}% | "
-
-            f"AvgPips="
-            f"{row['avg_pips'] or 0:.2f}",
-            flush=True,
-        )
-
-
-def analyze_symbol(
-    symbol,
-):
-    candles = (
-        fetch_candles(
+    instrument = (
+        get_instrument_config(
             symbol
         )
     )
 
-    result = (
-        analyze_market(
-            candles,
-            symbol,
+    pip_size = instrument[
+        "pip_size"
+    ]
+
+    min_stop_pips = instrument[
+        "min_stop_pips"
+    ]
+
+    assumed_spread_pips = instrument[
+        "assumed_spread_pips"
+    ]
+
+    events = (
+        get_signal_events_without_trades(
+            symbol=symbol
         )
     )
 
-    created_at = (
-        datetime.now(
+    for event in events:
+        candle_interval_minutes = (
+            interval_minutes(
+                event[
+                    "interval"
+                ]
+            )
+        )
+
+        signal_candle_open = (
+            datetime.strptime(
+                event[
+                    "candle_time"
+                ],
+                TIME_FORMAT,
+            ).replace(
+                tzinfo=timezone.utc
+            )
+        )
+
+        signal_time = (
+            signal_candle_open
+            + timedelta(
+                minutes=(
+                    candle_interval_minutes
+                )
+            )
+        )
+
+        now_utc = datetime.now(
             timezone.utc
-        ).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-    )
-
-    print(
-        format_result(
-            symbol,
-            result,
-        ),
-        flush=True,
-    )
-
-    saved, analysis_id = (
-        save_analysis(
-            created_at=created_at,
-            symbol=symbol,
-            interval=INTERVAL,
-            result=result,
-        )
-    )
-
-    if saved:
-        print(
-            f"{symbol} | "
-            f"New candle saved | "
-            f"Records="
-            f"{count_records(symbol)}",
-            flush=True,
         )
 
-    else:
-        print(
-            f"{symbol} | "
-            f"Candle "
-            f"{result['datetime']} "
-            f"already exists | skipped",
-            flush=True,
+        signal_age_seconds = (
+            now_utc
+            - signal_time
+        ).total_seconds()
+
+        signal_age_seconds = max(
+            signal_age_seconds,
+            0.0,
         )
 
-    if analysis_id is not None:
-        (
-            created,
-            event_id,
-            reason,
-        ) = (
-            create_signal_event_if_new(
-                analysis_id=analysis_id,
-                created_at=created_at,
-                symbol=symbol,
-                interval=INTERVAL,
-                result=result,
+        if (
+            signal_age_seconds
+            > MAX_LIVE_SIGNAL_AGE_SECONDS
+        ):
+            signal_event_id = event[
+                "signal_event_id"
+            ]
+
+            if (
+                signal_event_id
+                not in _logged_stale_signal_ids
+            ):
+                print(
+                    "STALE SIGNAL SKIPPED | "
+                    f"{event['symbol']} | "
+                    f"{event['signal']} | "
+                    "SignalTime="
+                    f"{signal_time.strftime(TIME_FORMAT)} UTC | "
+                    "Age="
+                    f"{int(signal_age_seconds)}s | "
+                    "Not published",
+                    flush=True,
+                )
+
+                _logged_stale_signal_ids.add(
+                    signal_event_id
+                )
+
+            continue
+
+        entry_price = float(
+            event[
+                "entry_price"
+            ]
+        )
+
+        atr = float(
+            event[
+                "atr"
+            ]
+        )
+
+        signal = event[
+            "signal"
+        ]
+
+        atr_stop_distance = (
+            atr
+            * STOP_LOSS_ATR_MULTIPLIER
+        )
+
+        minimum_stop_distance = (
+            min_stop_pips
+            * pip_size
+        )
+
+        stop_distance = max(
+            atr_stop_distance,
+            minimum_stop_distance,
+        )
+
+        target_distance = (
+            stop_distance
+            * TAKE_PROFIT_R_MULTIPLE
+        )
+
+        if signal == "BUY":
+            stop_loss = (
+                entry_price
+                - stop_distance
+            )
+
+            take_profit = (
+                entry_price
+                + target_distance
+            )
+
+        elif signal == "SELL":
+            stop_loss = (
+                entry_price
+                + stop_distance
+            )
+
+            take_profit = (
+                entry_price
+                - target_distance
+            )
+
+        else:
+            continue
+
+        risk_pips = (
+            stop_distance
+            / pip_size
+        )
+
+        reward_pips = (
+            target_distance
+            / pip_size
+        )
+
+        created, trade_id = (
+            save_virtual_trade(
+                signal_event_id=(
+                    event[
+                        "signal_event_id"
+                    ]
+                ),
+
+                created_at=(
+                    event[
+                        "created_at"
+                    ]
+                ),
+
+                entry_candle_time=(
+                    event[
+                        "candle_time"
+                    ]
+                ),
+
+                symbol=(
+                    event[
+                        "symbol"
+                    ]
+                ),
+
+                interval=(
+                    event[
+                        "interval"
+                    ]
+                ),
+
+                signal=signal,
+
+                entry_price=(
+                    entry_price
+                ),
+
+                atr=atr,
+
+                stop_loss=(
+                    stop_loss
+                ),
+
+                take_profit=(
+                    take_profit
+                ),
+
+                risk_pips=(
+                    risk_pips
+                ),
+
+                reward_pips=(
+                    reward_pips
+                ),
+
+                model_version=(
+                    TRADE_MODEL_VERSION
+                ),
+
+                spread_pips=(
+                    assumed_spread_pips
+                ),
+
+                max_hold_minutes=(
+                    MAX_TRADE_MINUTES
+                ),
             )
         )
 
         if created:
-            print(
-                "NEW SIGNAL EVENT | "
+            created_trades.append(
+                {
+                    "id":
+                        trade_id,
 
-                f"{symbol} | "
+                    "symbol":
+                        event[
+                            "symbol"
+                        ],
 
-                f"{result['signal']} | "
+                    "signal":
+                        signal,
 
-                f"Entry="
-                f"{result['close']:.5f} | "
+                    "entry":
+                        entry_price,
 
-                f"SetupScore="
-                f"{result['setup_score']}/100 | "
+                    "stop_loss":
+                        stop_loss,
 
-                f"Symbol signals="
-                f"{count_signal_events(symbol)}",
-                flush=True,
+                    "take_profit":
+                        take_profit,
+
+                    "risk_pips":
+                        risk_pips,
+
+                    "reward_pips":
+                        reward_pips,
+
+                    "spread_pips":
+                        assumed_spread_pips,
+
+                    "max_hold_minutes":
+                        MAX_TRADE_MINUTES,
+
+                    "entry_candle_time":
+                        event[
+                            "candle_time"
+                        ],
+
+                    "interval":
+                        event[
+                            "interval"
+                        ],
+                }
             )
 
-        elif (
-            reason
-            == "CONTINUATION"
-        ):
-            print(
-                f"{symbol} | "
-                f"{result['signal']} "
-                f"setup continues | "
-                f"no new signal",
-                flush=True,
-            )
+    return created_trades
 
-    new_trades = (
-        ensure_virtual_trades(
+
+def calculate_directional_pips(
+    signal,
+    entry_price,
+    exit_price,
+    pip_size,
+):
+    if signal == "BUY":
+        difference = (
+            exit_price
+            - entry_price
+        )
+
+    else:
+        difference = (
+            entry_price
+            - exit_price
+        )
+
+    return (
+        difference
+        / pip_size
+    )
+
+
+def calculate_candle_excursions(
+    signal,
+    entry_price,
+    high,
+    low,
+    pip_size,
+):
+    if signal == "BUY":
+        adverse_pips = max(
+            (
+                entry_price
+                - low
+            )
+            / pip_size,
+            0.0,
+        )
+
+        favorable_pips = max(
+            (
+                high
+                - entry_price
+            )
+            / pip_size,
+            0.0,
+        )
+
+    elif signal == "SELL":
+        adverse_pips = max(
+            (
+                high
+                - entry_price
+            )
+            / pip_size,
+            0.0,
+        )
+
+        favorable_pips = max(
+            (
+                entry_price
+                - low
+            )
+            / pip_size,
+            0.0,
+        )
+
+    else:
+        adverse_pips = 0.0
+        favorable_pips = 0.0
+
+    return (
+        adverse_pips,
+        favorable_pips,
+    )
+
+
+def evaluate_open_trades(
+    candles,
+    symbol,
+):
+    results = []
+
+    instrument = (
+        get_instrument_config(
             symbol
         )
     )
 
-    if new_trades:
-        print_new_virtual_trades(
-            new_trades,
-            candles,
-        )
+    pip_size = instrument[
+        "pip_size"
+    ]
 
-    trade_results = (
-        evaluate_open_trades(
-            candles,
-            symbol,
+    open_trades = (
+        get_open_virtual_trades(
+            symbol=symbol
         )
     )
 
-    if trade_results:
-        print_trade_results(
-            trade_results
-        )
-
-        print_trade_summary(
-            symbol
-        )
-
-        print_excursion_summary(
-            symbol
-        )
-
-    outcomes = (
-        evaluate_pending_signals(
-            candles,
-            symbol,
-        )
-    )
-
-    if outcomes:
-        for outcome in outcomes:
-            print(
-                "OUTCOME | "
-
-                f"{outcome['symbol']} | "
-
-                f"{outcome['signal']} | "
-
-                f"Signal candle="
-                f"{outcome['signal_time']} | "
-
-                f"After="
-                f"{outcome['horizon']}m | "
-
-                f"{outcome['result']} | "
-
-                f"Pips="
-                f"{outcome['pips']:.2f} | "
-
-                f"SetupScore="
-                f"{outcome['score']}/100",
-                flush=True,
-            )
-
-        print_outcome_summary(
-            symbol
-        )
-
-
-def analyze_once():
-    for symbol in SYMBOLS:
-        try:
-            analyze_symbol(
-                symbol
-            )
-
-        except Exception as error:
-            print(
-                f"MARKET ERROR | "
-                f"{symbol} | "
-                f"{type(error).__name__}: "
-                f"{error}",
-                flush=True,
-            )
-
-    try:
-        send_daily_report_if_due()
-
-    except Exception as error:
-        print(
-            "DAILY REPORT ERROR | "
-            f"{type(error).__name__}: "
-            f"{error}",
-            flush=True,
-        )
-
-    try:
-        send_weekly_report_if_due()
-
-    except Exception as error:
-        print(
-            "WEEKLY REPORT ERROR | "
-            f"{type(error).__name__}: "
-            f"{error}",
-            flush=True,
-        )
-
-    try:
-        process_market_overview()
-
-    except Exception as error:
-        print(
-            "MARKET OVERVIEW ERROR | "
-            f"{type(error).__name__}: "
-            f"{error}",
-            flush=True,
-        )
-
-    try:
-        process_economic_calendar()
-
-    except Exception as error:
-        print(
-            "CALENDAR ERROR | "
-            f"{type(error).__name__}: "
-            f"{error}",
-            flush=True,
-        )
-
-    try:
-        process_news_digest()
-
-    except Exception as error:
-        print(
-            "NEWS DIGEST ERROR | "
-            f"{type(error).__name__}: "
-            f"{error}",
-            flush=True,
-        )
-
-
-def seconds_until_next_check():
-    now = time.time()
-
-    next_boundary = (
-        (
-            int(now)
-            // INTERVAL_SECONDS
-            + 1
-        )
-        * INTERVAL_SECONDS
-    )
-
-    target = (
-        next_boundary
-        + CANDLE_CLOSE_DELAY_SECONDS
-    )
-
-    return max(
-        target - now,
-        1,
-    )
-
-
-def main():
-    init_db()
-
-    init_daily_report_table()
-
-    init_weekly_report_table()
-
-    init_market_overview_table()
-
-    init_economic_calendar()
-
-    init_news_digest_tables()
-
-    print(
-        "Multi-market analysis engine started",
-        flush=True,
-    )
-
-    print(
-        "Symbols: "
-        + ", ".join(
-            SYMBOLS
-        ),
-        flush=True,
-    )
-
-    print(
-        f"Stored candles: "
-        f"{count_records()}",
-        flush=True,
-    )
-
-    for symbol in SYMBOLS:
-        print(
-            f"{symbol} | "
-            f"Records="
-            f"{count_records(symbol)} | "
-            f"Signals="
-            f"{count_signal_events(symbol)} | "
-            f"V2 Trades="
-            f"{count_virtual_trades(symbol)} | "
-            f"Open="
-            f"{count_open_virtual_trades(symbol)}",
-            flush=True,
-        )
-
-    print(
-        f"Schedule: every "
-        f"{INTERVAL}, "
-        f"{CANDLE_CLOSE_DELAY_SECONDS}s "
-        f"after candle boundary",
-        flush=True,
-    )
-
-    print(
-        "Daily report: "
-        "00:05 UTC for previous day -> "
-        "Free channel",
-        flush=True,
-    )
-
-    print(
-        "Weekly report: "
-        "Monday 00:10 UTC for previous week -> "
-        "Free channel",
-        flush=True,
-    )
-
-    print(
-        "Morning overview: "
-        "weekdays 07:05-09:00 UTC -> "
-        "Free channel",
-        flush=True,
-    )
-
-    print(
-        "Economic calendar: "
-        "High Impact -> "
-        "Free channel",
-        flush=True,
-    )
-
-    print(
-        "News digest: "
-        "10:30 & 16:30 UTC -> "
-        "Free channel",
-        flush=True,
-    )
-
-    print(
-        "MAE/MFE tracking: enabled",
-        flush=True,
-    )
-
-    try:
-        analyze_once()
-
-    except Exception as error:
-        print(
-            f"ERROR: "
-            f"{type(error).__name__}: "
-            f"{error}",
-            flush=True,
-        )
-
-    while True:
-        wait_seconds = (
-            seconds_until_next_check()
-        )
-
-        next_check = (
-            datetime.fromtimestamp(
-                time.time()
-                + wait_seconds,
-                tz=timezone.utc,
+    for trade in open_trades:
+        signal_candle_open = (
+            datetime.strptime(
+                trade[
+                    "entry_candle_time"
+                ],
+                TIME_FORMAT,
             )
         )
 
-        print(
-            f"Next market check: "
-            f"{next_check.strftime('%Y-%m-%d %H:%M:%S UTC')}",
-            flush=True,
+        candle_interval_minutes = (
+            interval_minutes(
+                trade[
+                    "interval"
+                ]
+            )
         )
 
-        time.sleep(
-            wait_seconds
+        actual_entry_time = (
+            signal_candle_open
+            + timedelta(
+                minutes=(
+                    candle_interval_minutes
+                )
+            )
         )
 
-        try:
-            analyze_once()
+        maximum_exit_time = (
+            actual_entry_time
+            + timedelta(
+                minutes=(
+                    trade[
+                        "max_hold_minutes"
+                    ]
+                )
+            )
+        )
 
-        except Exception as error:
-            print(
-                f"ERROR: "
-                f"{type(error).__name__}: "
-                f"{error}",
-                flush=True,
+        entry_price = float(
+            trade[
+                "entry_price"
+            ]
+        )
+
+        stop_loss = float(
+            trade[
+                "stop_loss"
+            ]
+        )
+
+        take_profit = float(
+            trade[
+                "take_profit"
+            ]
+        )
+
+        risk_pips = float(
+            trade[
+                "risk_pips"
+            ]
+        )
+
+        reward_pips = float(
+            trade[
+                "reward_pips"
+            ]
+        )
+
+        spread_pips = float(
+            trade[
+                "spread_pips"
+            ]
+        )
+
+        signal = trade[
+            "signal"
+        ]
+
+        current_mae = (
+            float(
+                trade[
+                    "mae_pips"
+                ]
+            )
+            if trade[
+                "mae_pips"
+            ] is not None
+            else 0.0
+        )
+
+        current_mfe = (
+            float(
+                trade[
+                    "mfe_pips"
+                ]
+            )
+            if trade[
+                "mfe_pips"
+            ] is not None
+            else 0.0
+        )
+
+        for candle in candles:
+            candle_open = (
+                datetime.strptime(
+                    candle[
+                        "datetime"
+                    ],
+                    TIME_FORMAT,
+                )
             )
 
+            if (
+                candle_open
+                < actual_entry_time
+            ):
+                continue
 
-if __name__ == "__main__":
-    main()
+            candle_close_time = (
+                candle_open
+                + timedelta(
+                    minutes=(
+                        candle_interval_minutes
+                    )
+                )
+            )
+
+            high = float(
+                candle[
+                    "high"
+                ]
+            )
+
+            low = float(
+                candle[
+                    "low"
+                ]
+            )
+
+            close = float(
+                candle[
+                    "close"
+                ]
+            )
+
+            if signal == "BUY":
+                stop_hit = (
+                    low
+                    <= stop_loss
+                )
+
+                target_hit = (
+                    high
+                    >= take_profit
+                )
+
+            elif signal == "SELL":
+                stop_hit = (
+                    high
+                    >= stop_loss
+                )
+
+                target_hit = (
+                    low
+                    <= take_profit
+                )
+
+            else:
+                continue
+
+            # =========================
+            # AMBIGUOUS CANDLE
+            # =========================
+            #
+            # Both SL and TP were
+            # touched inside one candle.
+            # OHLC cannot tell which
+            # happened first.
+            #
+            # Do not use this candle
+            # for MAE/MFE.
+
+            if (
+                stop_hit
+                and target_hit
+            ):
+                closed = (
+                    close_virtual_trade(
+                        trade_id=(
+                            trade[
+                                "id"
+                            ]
+                        ),
+
+                        status=(
+                            "AMBIGUOUS"
+                        ),
+
+                        exit_candle_time=(
+                            candle[
+                                "datetime"
+                            ]
+                        ),
+
+                        exit_price=None,
+
+                        exit_reason=(
+                            "SL_AND_TP_"
+                            "SAME_CANDLE"
+                        ),
+
+                        gross_pnl_pips=None,
+                        net_pnl_pips=None,
+                        r_multiple=None,
+                    )
+                )
+
+                if closed:
+                    results.append(
+                        {
+                            "trade_id":
+                                trade[
+                                    "id"
+                                ],
+
+                            "symbol":
+                                symbol,
+
+                            "signal":
+                                signal,
+
+                            "result":
+                                "AMBIGUOUS",
+
+                            "candle_time":
+                                candle[
+                                    "datetime"
+                                ],
+
+                            "gross_pips":
+                                None,
+
+                            "net_pips":
+                                None,
+
+                            "r":
+                                None,
+
+                            "mae_pips":
+                                current_mae,
+
+                            "mfe_pips":
+                                current_mfe,
+
+                            "interval":
+                                trade[
+                                    "interval"
+                                ],
+                        }
+                    )
+
+                break
+
+            # =========================
+            # TAKE PROFIT
+            # =========================
+
+            if target_hit:
+                current_mfe = max(
+                    current_mfe,
+                    reward_pips,
+                )
+
+                update_trade_excursions(
+                    trade_id=(
+                        trade[
+                            "id"
+                        ]
+                    ),
+
+                    mae_pips=(
+                        current_mae
+                    ),
+
+                    mfe_pips=(
+                        current_mfe
+                    ),
+                )
+
+                gross_pips = (
+                    reward_pips
+                )
+
+                net_pips = (
+                    gross_pips
+                    - spread_pips
+                )
+
+                r_multiple = (
+                    net_pips
+                    / risk_pips
+                )
+
+                closed = (
+                    close_virtual_trade(
+                        trade_id=(
+                            trade[
+                                "id"
+                            ]
+                        ),
+
+                        status="CLOSED",
+
+                        exit_candle_time=(
+                            candle[
+                                "datetime"
+                            ]
+                        ),
+
+                        exit_price=(
+                            take_profit
+                        ),
+
+                        exit_reason=(
+                            "TAKE_PROFIT"
+                        ),
+
+                        gross_pnl_pips=(
+                            gross_pips
+                        ),
+
+                        net_pnl_pips=(
+                            net_pips
+                        ),
+
+                        r_multiple=(
+                            r_multiple
+                        ),
+                    )
+                )
+
+                if closed:
+                    results.append(
+                        {
+                            "trade_id":
+                                trade[
+                                    "id"
+                                ],
+
+                            "symbol":
+                                symbol,
+
+                            "signal":
+                                signal,
+
+                            "result":
+                                "TAKE_PROFIT",
+
+                            "candle_time":
+                                candle[
+                                    "datetime"
+                                ],
+
+                            "gross_pips":
+                                gross_pips,
+
+                            "net_pips":
+                                net_pips,
+
+                            "r":
+                                r_multiple,
+
+                            "mae_pips":
+                                current_mae,
+
+                            "mfe_pips":
+                                current_mfe,
+
+                            "interval":
+                                trade[
+                                    "interval"
+                                ],
+                        }
+                    )
+
+                break
+
+            # =========================
+            # STOP LOSS
+            # =========================
+
+            if stop_hit:
+                current_mae = max(
+                    current_mae,
+                    risk_pips,
+                )
+
+                update_trade_excursions(
+                    trade_id=(
+                        trade[
+                            "id"
+                        ]
+                    ),
+
+                    mae_pips=(
+                        current_mae
+                    ),
+
+                    mfe_pips=(
+                        current_mfe
+                    ),
+                )
+
+                gross_pips = (
+                    -risk_pips
+                )
+
+                net_pips = (
+                    gross_pips
+                    - spread_pips
+                )
+
+                r_multiple = (
+                    net_pips
+                    / risk_pips
+                )
+
+                closed = (
+                    close_virtual_trade(
+                        trade_id=(
+                            trade[
+                                "id"
+                            ]
+                        ),
+
+                        status="CLOSED",
+
+                        exit_candle_time=(
+                            candle[
+                                "datetime"
+                            ]
+                        ),
+
+                        exit_price=(
+                            stop_loss
+                        ),
+
+                        exit_reason=(
+                            "STOP_LOSS"
+                        ),
+
+                        gross_pnl_pips=(
+                            gross_pips
+                        ),
+
+                        net_pnl_pips=(
+                            net_pips
+                        ),
+
+                        r_multiple=(
+                            r_multiple
+                        ),
+                    )
+                )
+
+                if closed:
+                    results.append(
+                        {
+                            "trade_id":
+                                trade[
+                                    "id"
+                                ],
+
+                            "symbol":
+                                symbol,
+
+                            "signal":
+                                signal,
+
+                            "result":
+                                "STOP_LOSS",
+
+                            "candle_time":
+                                candle[
+                                    "datetime"
+                                ],
+
+                            "gross_pips":
+                                gross_pips,
+
+                            "net_pips":
+                                net_pips,
+
+                            "r":
+                                r_multiple,
+
+                            "mae_pips":
+                                current_mae,
+
+                            "mfe_pips":
+                                current_mfe,
+
+                            "interval":
+                                trade[
+                                    "interval"
+                                ],
+                        }
+                    )
+
+                break
+
+            # =========================
+            # NORMAL OPEN CANDLE
+            # =========================
+
+            (
+                candle_mae,
+                candle_mfe,
+            ) = (
+                calculate_candle_excursions(
+                    signal=signal,
+
+                    entry_price=(
+                        entry_price
+                    ),
+
+                    high=high,
+                    low=low,
+
+                    pip_size=(
+                        pip_size
+                    ),
+                )
+            )
+
+            current_mae = max(
+                current_mae,
+                candle_mae,
+            )
+
+            current_mfe = max(
+                current_mfe,
+                candle_mfe,
+            )
+
+            update_trade_excursions(
+                trade_id=(
+                    trade[
+                        "id"
+                    ]
+                ),
+
+                mae_pips=(
+                    current_mae
+                ),
+
+                mfe_pips=(
+                    current_mfe
+                ),
+            )
+
+            # =========================
+            # TIME EXIT
+            # =========================
+
+            if (
+                candle_close_time
+                >= maximum_exit_time
+            ):
+                gross_pips = (
+                    calculate_directional_pips(
+                        signal=signal,
+
+                        entry_price=(
+                            entry_price
+                        ),
+
+                        exit_price=(
+                            close
+                        ),
+
+                        pip_size=(
+                            pip_size
+                        ),
+                    )
+                )
+
+                net_pips = (
+                    gross_pips
+                    - spread_pips
+                )
+
+                r_multiple = (
+                    net_pips
+                    / risk_pips
+                )
+
+                closed = (
+                    close_virtual_trade(
+                        trade_id=(
+                            trade[
+                                "id"
+                            ]
+                        ),
+
+                        status="CLOSED",
+
+                        exit_candle_time=(
+                            candle[
+                                "datetime"
+                            ]
+                        ),
+
+                        exit_price=(
+                            close
+                        ),
+
+                        exit_reason=(
+                            "TIMEOUT"
+                        ),
+
+                        gross_pnl_pips=(
+                            gross_pips
+                        ),
+
+                        net_pnl_pips=(
+                            net_pips
+                        ),
+
+                        r_multiple=(
+                            r_multiple
+                        ),
+                    )
+                )
+
+                if closed:
+                    results.append(
+                        {
+                            "trade_id":
+                                trade[
+                                    "id"
+                                ],
+
+                            "symbol":
+                                symbol,
+
+                            "signal":
+                                signal,
+
+                            "result":
+                                "TIMEOUT",
+
+                            "candle_time":
+                                candle[
+                                    "datetime"
+                                ],
+
+                            "gross_pips":
+                                gross_pips,
+
+                            "net_pips":
+                                net_pips,
+
+                            "r":
+                                r_multiple,
+
+                            "mae_pips":
+                                current_mae,
+
+                            "mfe_pips":
+                                current_mfe,
+
+                            "interval":
+                                trade[
+                                    "interval"
+                                ],
+                        }
+                    )
+
+                break
+
+    return results
