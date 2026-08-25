@@ -44,6 +44,11 @@ from telegram_notifier import (
     send_trade_closed,
 )
 
+from daily_report import (
+    init_daily_report_table,
+    send_daily_report_if_due,
+)
+
 
 CANDLE_CLOSE_DELAY_SECONDS = 15
 
@@ -196,7 +201,7 @@ def print_trade_results(
 
                 f"{trade['signal']} | "
 
-                f"AMBIGUOUS | "
+                "AMBIGUOUS | "
 
                 f"Candle="
                 f"{trade['candle_time']}",
@@ -481,6 +486,8 @@ def analyze_once():
 
         print_outcome_summary()
 
+    send_daily_report_if_due()
+
 
 def seconds_until_next_check():
     now = time.time()
@@ -507,6 +514,7 @@ def seconds_until_next_check():
 
 def main():
     init_db()
+    init_daily_report_table()
 
     print(
         "Forex analysis engine started",
@@ -539,6 +547,13 @@ def main():
         f"{INTERVAL}, "
         f"{CANDLE_CLOSE_DELAY_SECONDS}s "
         f"after candle boundary",
+        flush=True,
+    )
+
+    print(
+        "Daily report: "
+        "23:55 UTC -> "
+        "Free channel",
         flush=True,
     )
 
