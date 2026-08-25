@@ -12,7 +12,6 @@ DB_PATH = Path(
     "/app/data/trading.db"
 )
 
-
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -34,14 +33,13 @@ def get_connection():
     return connection
 
 
-def get_columns(connection):
+def get_table_columns(
+    connection,
+    table_name,
+):
 
     rows = connection.execute(
-        """
-        PRAGMA table_info(
-            market_analysis
-        )
-        """
+        f"PRAGMA table_info({table_name})"
     ).fetchall()
 
     return {
@@ -74,14 +72,17 @@ def interval_minutes(interval):
         )
 
     raise ValueError(
-        f"Unsupported interval: "
-        f"{interval}"
+        f"Unsupported interval: {interval}"
     )
 
 
 def init_db():
 
     with get_connection() as connection:
+
+        # =========================
+        # MARKET ANALYSIS
+        # =========================
 
         connection.execute(
             """
@@ -116,8 +117,9 @@ def init_db():
             """
         )
 
-        columns = get_columns(
-            connection
+        columns = get_table_columns(
+            connection,
+            "market_analysis",
         )
 
         migrations = {
@@ -143,12 +145,9 @@ def init_db():
 
                 connection.execute(
                     f"""
-                    ALTER TABLE
-                    market_analysis
-
+                    ALTER TABLE market_analysis
                     ADD COLUMN
-                    {column}
-                    {definition}
+                    {column} {definition}
                     """
                 )
 
@@ -215,7 +214,7 @@ def init_db():
         )
 
         # =========================
-        # OLD 15/30/60 OUTCOMES
+        # 15 / 30 / 60 OUTCOMES
         # =========================
 
         connection.execute(
@@ -226,25 +225,17 @@ def init_db():
                 id INTEGER
                 PRIMARY KEY AUTOINCREMENT,
 
-                signal_event_id INTEGER
-                NOT NULL,
+                signal_event_id INTEGER NOT NULL,
 
-                horizon_minutes INTEGER
-                NOT NULL,
+                horizon_minutes INTEGER NOT NULL,
 
-                target_candle_time TEXT
-                NOT NULL,
+                target_candle_time TEXT NOT NULL,
+                target_close REAL NOT NULL,
 
-                target_close REAL
-                NOT NULL,
-
-                directional_pips REAL
-                NOT NULL,
-
+                directional_pips REAL NOT NULL,
                 result TEXT NOT NULL,
 
-                evaluated_at TEXT
-                NOT NULL,
+                evaluated_at TEXT NOT NULL,
 
                 UNIQUE (
                     signal_event_id,
@@ -271,8 +262,7 @@ def init_db():
 
                 created_at TEXT NOT NULL,
 
-                entry_candle_time TEXT
-                NOT NULL,
+                entry_candle_time TEXT NOT NULL,
 
                 symbol TEXT NOT NULL,
                 interval TEXT NOT NULL,
@@ -292,9 +282,7 @@ def init_db():
                 DEFAULT 'OPEN',
 
                 exit_candle_time TEXT,
-
                 exit_price REAL,
-
                 exit_reason TEXT,
 
                 pnl_pips REAL
@@ -302,8 +290,49 @@ def init_db():
             """
         )
 
+        trade_columns = get_table_columns(
+            connection,
+            "virtual_trades",
+        )
+
+        trade_migrations = {
+
+            "model_version":
+                "TEXT NOT NULL DEFAULT 'V1'",
+
+            "spread_pips":
+                "REAL NOT NULL DEFAULT 0",
+
+            "net_pnl_pips":
+                "REAL",
+
+            "r_multiple":
+                "REAL",
+
+            "max_hold_minutes":
+                "INTEGER NOT NULL DEFAULT 0",
+        }
+
+        for column, definition in (
+            trade_migrations.items()
+        ):
+
+            if column not in trade_columns:
+
+                connection.execute(
+                    f"""
+                    ALTER TABLE virtual_trades
+                    ADD COLUMN
+                    {column} {definition}
+                    """
+                )
+
         connection.commit()
 
+
+# =========================
+# MARKET ANALYSIS
+# =========================
 
 def save_analysis(
     created_at,
@@ -367,7 +396,6 @@ def save_analysis(
             )
             """,
             (
-
                 created_at,
                 result["datetime"],
 
@@ -429,6 +457,24 @@ def save_analysis(
             else None,
         )
 
+
+def count_records():
+
+    with get_connection() as connection:
+
+        row = connection.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM market_analysis
+            """
+        ).fetchone()
+
+        return row["total"]
+
+
+# =========================
+# SIGNAL EVENTS
+# =========================
 
 def create_signal_event_if_new(
     analysis_id,
@@ -639,21 +685,6 @@ def create_signal_event_if_new(
         )
 
 
-def count_records():
-
-    with get_connection() as connection:
-
-        row = connection.execute(
-            """
-            SELECT COUNT(*) AS total
-
-            FROM market_analysis
-            """
-        ).fetchone()
-
-        return row["total"]
-
-
 def count_signal_events():
 
     with get_connection() as connection:
@@ -670,7 +701,7 @@ def count_signal_events():
 
 
 # =========================
-# SIGNAL OUTCOMES
+# 15 / 30 / 60 RESEARCH
 # =========================
 
 def get_pending_signal_events():
@@ -684,7 +715,6 @@ def get_pending_signal_events():
                 id AS signal_event_id,
 
                 candle_time,
-
                 entry_price,
 
                 signal,
@@ -838,7 +868,7 @@ def get_outcome_summary():
 
 
 # =========================
-# VIRTUAL TRADE STORAGE
+# VIRTUAL TRADE V2
 # =========================
 
 def get_signal_events_without_trades():
@@ -853,14 +883,12 @@ def get_signal_events_without_trades():
                 AS signal_event_id,
 
                 se.created_at,
-
                 se.candle_time,
 
                 se.symbol,
                 se.interval,
 
                 se.signal,
-
                 se.entry_price,
 
                 se.setup_score,
@@ -889,13 +917,12 @@ def get_signal_events_without_trades():
 
 def save_virtual_trade(
     signal_event_id,
-    created_at,
 
+    created_at,
     entry_candle_time,
 
     symbol,
     interval,
-
     signal,
 
     entry_price,
@@ -906,6 +933,10 @@ def save_virtual_trade(
 
     risk_pips,
     reward_pips,
+
+    model_version,
+    spread_pips,
+    max_hold_minutes,
 ):
 
     with get_connection() as connection:
@@ -918,12 +949,10 @@ def save_virtual_trade(
                 signal_event_id,
 
                 created_at,
-
                 entry_candle_time,
 
                 symbol,
                 interval,
-
                 signal,
 
                 entry_price,
@@ -935,31 +964,32 @@ def save_virtual_trade(
                 risk_pips,
                 reward_pips,
 
-                status
+                status,
+
+                model_version,
+                spread_pips,
+                max_hold_minutes
             )
 
             VALUES (
                 ?,
-                ?,
-                ?,
                 ?, ?,
-                ?,
+                ?, ?, ?,
                 ?, ?,
                 ?, ?,
                 ?, ?,
-                'OPEN'
+                'OPEN',
+                ?, ?, ?
             )
             """,
             (
                 signal_event_id,
 
                 created_at,
-
                 entry_candle_time,
 
                 symbol,
                 interval,
-
                 signal,
 
                 entry_price,
@@ -970,6 +1000,10 @@ def save_virtual_trade(
 
                 risk_pips,
                 reward_pips,
+
+                model_version,
+                spread_pips,
+                max_hold_minutes,
             ),
         )
 
@@ -999,6 +1033,7 @@ def get_open_virtual_trades():
             FROM virtual_trades
 
             WHERE status = 'OPEN'
+            AND model_version = 'V2'
 
             ORDER BY entry_candle_time ASC
             """
@@ -1016,12 +1051,13 @@ def close_virtual_trade(
     status,
 
     exit_candle_time,
-
     exit_price,
 
     exit_reason,
 
-    pnl_pips,
+    gross_pnl_pips,
+    net_pnl_pips,
+    r_multiple,
 ):
 
     with get_connection() as connection:
@@ -1034,12 +1070,13 @@ def close_virtual_trade(
                 status = ?,
 
                 exit_candle_time = ?,
-
                 exit_price = ?,
 
                 exit_reason = ?,
 
-                pnl_pips = ?
+                pnl_pips = ?,
+                net_pnl_pips = ?,
+                r_multiple = ?
 
             WHERE id = ?
             AND status = 'OPEN'
@@ -1048,12 +1085,13 @@ def close_virtual_trade(
                 status,
 
                 exit_candle_time,
-
                 exit_price,
 
                 exit_reason,
 
-                pnl_pips,
+                gross_pnl_pips,
+                net_pnl_pips,
+                r_multiple,
 
                 trade_id,
             ),
@@ -1061,7 +1099,9 @@ def close_virtual_trade(
 
         connection.commit()
 
-        return cursor.rowcount > 0
+        return (
+            cursor.rowcount > 0
+        )
 
 
 def count_virtual_trades():
@@ -1073,6 +1113,8 @@ def count_virtual_trades():
             SELECT COUNT(*) AS total
 
             FROM virtual_trades
+
+            WHERE model_version = 'V2'
             """
         ).fetchone()
 
@@ -1089,7 +1131,8 @@ def count_open_virtual_trades():
 
             FROM virtual_trades
 
-            WHERE status = 'OPEN'
+            WHERE model_version = 'V2'
+            AND status = 'OPEN'
             """
         ).fetchone()
 
@@ -1110,8 +1153,7 @@ def get_trade_summary():
                     CASE
                     WHEN exit_reason =
                     'TAKE_PROFIT'
-                    THEN 1
-                    ELSE 0
+                    THEN 1 ELSE 0
                     END
                 ) AS take_profits,
 
@@ -1119,17 +1161,23 @@ def get_trade_summary():
                     CASE
                     WHEN exit_reason =
                     'STOP_LOSS'
-                    THEN 1
-                    ELSE 0
+                    THEN 1 ELSE 0
                     END
                 ) AS stop_losses,
 
                 SUM(
                     CASE
+                    WHEN exit_reason =
+                    'TIMEOUT'
+                    THEN 1 ELSE 0
+                    END
+                ) AS timeouts,
+
+                SUM(
+                    CASE
                     WHEN status =
                     'AMBIGUOUS'
-                    THEN 1
-                    ELSE 0
+                    THEN 1 ELSE 0
                     END
                 ) AS ambiguous,
 
@@ -1137,28 +1185,37 @@ def get_trade_summary():
                     CASE
                     WHEN status =
                     'OPEN'
-                    THEN 1
-                    ELSE 0
+                    THEN 1 ELSE 0
                     END
                 ) AS open_trades,
-
-                AVG(
-                    CASE
-                    WHEN status = 'CLOSED'
-                    THEN pnl_pips
-                    ELSE NULL
-                    END
-                ) AS avg_pips,
 
                 SUM(
                     CASE
                     WHEN status = 'CLOSED'
-                    THEN pnl_pips
+                    THEN net_pnl_pips
                     ELSE 0
                     END
-                ) AS total_pips
+                ) AS total_net_pips,
+
+                AVG(
+                    CASE
+                    WHEN status = 'CLOSED'
+                    THEN net_pnl_pips
+                    ELSE NULL
+                    END
+                ) AS avg_net_pips,
+
+                AVG(
+                    CASE
+                    WHEN status = 'CLOSED'
+                    THEN r_multiple
+                    ELSE NULL
+                    END
+                ) AS avg_r
 
             FROM virtual_trades
+
+            WHERE model_version = 'V2'
             """
         ).fetchone()
 
