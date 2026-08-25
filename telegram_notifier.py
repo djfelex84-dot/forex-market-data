@@ -1,7 +1,14 @@
 import os
-from datetime import datetime, timedelta
+from datetime import (
+    datetime,
+    timedelta,
+)
 
 import requests
+
+from config import (
+    INTERVAL,
+)
 
 from trade_chart import (
     create_trade_chart,
@@ -72,10 +79,17 @@ def send_message(text):
         response = requests.post(
             SEND_MESSAGE_URL,
             json={
-                "chat_id": CHANNEL_ID,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
+                "chat_id":
+                    CHANNEL_ID,
+
+                "text":
+                    text,
+
+                "parse_mode":
+                    "HTML",
+
+                "disable_web_page_preview":
+                    True,
             },
             timeout=15,
         )
@@ -118,9 +132,14 @@ def send_photo(
         response = requests.post(
             SEND_PHOTO_URL,
             data={
-                "chat_id": CHANNEL_ID,
-                "caption": caption,
-                "parse_mode": "HTML",
+                "chat_id":
+                    CHANNEL_ID,
+
+                "caption":
+                    caption,
+
+                "parse_mode":
+                    "HTML",
             },
             files={
                 "photo": (
@@ -166,20 +185,57 @@ def get_direction_icon(signal):
 
 def get_signal_time(trade):
     candle_time = datetime.strptime(
-        trade["entry_candle_time"],
+        trade[
+            "entry_candle_time"
+        ],
         TIME_FORMAT,
     )
 
     signal_time = (
         candle_time
         + timedelta(
-            minutes=interval_minutes(
-                trade["interval"]
+            minutes=(
+                interval_minutes(
+                    trade[
+                        "interval"
+                    ]
+                )
             )
         )
     )
 
     return signal_time.strftime(
+        "%Y-%m-%d %H:%M UTC"
+    )
+
+
+def get_result_confirmed_time(
+    trade
+):
+    candle_open = datetime.strptime(
+        trade[
+            "candle_time"
+        ],
+        TIME_FORMAT,
+    )
+
+    trade_interval = trade.get(
+        "interval",
+        INTERVAL,
+    )
+
+    confirmed_time = (
+        candle_open
+        + timedelta(
+            minutes=(
+                interval_minutes(
+                    trade_interval
+                )
+            )
+        )
+    )
+
+    return confirmed_time.strftime(
         "%Y-%m-%d %H:%M UTC"
     )
 
@@ -201,7 +257,9 @@ def build_trade_opened_text(
 ):
     direction_icon = (
         get_direction_icon(
-            trade["signal"]
+            trade[
+                "signal"
+            ]
         )
     )
 
@@ -218,8 +276,12 @@ def build_trade_opened_text(
     )
 
     rr = (
-        trade["reward_pips"]
-        / trade["risk_pips"]
+        trade[
+            "reward_pips"
+        ]
+        / trade[
+            "risk_pips"
+        ]
     )
 
     signal_time = (
@@ -288,7 +350,9 @@ def send_trade_opened(
             create_trade_chart(
                 candles=candles,
                 trade=trade,
-                symbol=trade["symbol"],
+                symbol=trade[
+                    "symbol"
+                ],
             )
         )
 
@@ -324,17 +388,25 @@ def send_trade_opened(
     )
 
 
-def send_trade_closed(trade):
-    result = trade["result"]
+def send_trade_closed(
+    trade
+):
+    result = trade[
+        "result"
+    ]
 
     direction_icon = (
         get_direction_icon(
-            trade["signal"]
+            trade[
+                "signal"
+            ]
         )
     )
 
-    result_candle = (
-        f"{trade['candle_time']} UTC"
+    result_confirmed = (
+        get_result_confirmed_time(
+            trade
+        )
     )
 
     if result == "TAKE_PROFIT":
@@ -363,14 +435,15 @@ def send_trade_closed(trade):
             "\n"
             "SL and TP were reached "
             "inside the same "
-            "5-minute candle.\n"
+            f"{trade.get('interval', INTERVAL)} "
+            "candle.\n"
             "\n"
             "The exact order cannot "
             "be determined from "
             "OHLC data.\n"
             "\n"
-            f"🕒 Result candle: "
-            f"<b>{result_candle}</b>\n"
+            f"🕒 Result confirmed: "
+            f"<b>{result_confirmed}</b>\n"
             "\n"
             "<i>Test signal · "
             "simulated execution</i>"
@@ -378,11 +451,15 @@ def send_trade_closed(trade):
 
     else:
         net_pips = (
-            trade["net_pips"]
+            trade[
+                "net_pips"
+            ]
         )
 
         r_value = (
-            trade["r"]
+            trade[
+                "r"
+            ]
         )
 
         if net_pips > 0:
@@ -407,8 +484,8 @@ def send_trade_closed(trade):
             f"📊 Result: "
             f"<b>{r_value:+.2f}R</b>\n"
             "\n"
-            f"🕒 Result candle: "
-            f"<b>{result_candle}</b>\n"
+            f"🕒 Result confirmed: "
+            f"<b>{result_confirmed}</b>\n"
             "\n"
             "<i>Test signal · "
             "simulated execution</i>"
