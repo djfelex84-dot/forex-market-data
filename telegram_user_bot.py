@@ -11,6 +11,12 @@ from user_subscriptions import (
     get_effective_access,
 )
 
+from vip_access import (
+    init_vip_access_table,
+    create_vip_invite,
+    process_vip_join_request,
+)
+
 
 BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN",
@@ -40,6 +46,7 @@ STATE_KEY = "last_update_id"
 CALLBACK_MENU = "MENU"
 CALLBACK_STATUS = "STATUS"
 CALLBACK_VIP = "VIP"
+CALLBACK_VIP_ACCESS = "VIP_ACCESS"
 CALLBACK_ABOUT = "ABOUT"
 CALLBACK_HELP = "HELP"
 
@@ -267,12 +274,10 @@ def send_inline_message(
             "reply_markup"
         ] = reply_markup
 
-    result = telegram_request(
+    return telegram_request(
         "sendMessage",
         payload,
     )
-
-    return result
 
 
 def edit_inline_message(
@@ -400,44 +405,44 @@ def main_menu_keyboard(
     language
 ):
     if language == "ru":
-        status_text = (
+        status_text_value = (
             "📊 Мой статус"
         )
 
-        vip_text = (
+        vip_text_value = (
             "⭐ VIP"
         )
 
-        channel_text = (
+        channel_text_value = (
             "📢 Бесплатный канал"
         )
 
-        about_text = (
+        about_text_value = (
             "ℹ️ О проекте"
         )
 
-        help_text = (
+        help_text_value = (
             "❓ Помощь"
         )
 
     else:
-        status_text = (
+        status_text_value = (
             "📊 My Status"
         )
 
-        vip_text = (
+        vip_text_value = (
             "⭐ VIP"
         )
 
-        channel_text = (
+        channel_text_value = (
             "📢 Free Channel"
         )
 
-        about_text = (
+        about_text_value = (
             "ℹ️ About"
         )
 
-        help_text = (
+        help_text_value = (
             "❓ Help"
         )
 
@@ -446,7 +451,7 @@ def main_menu_keyboard(
             [
                 {
                     "text":
-                        status_text,
+                        status_text_value,
 
                     "callback_data":
                         CALLBACK_STATUS,
@@ -456,7 +461,7 @@ def main_menu_keyboard(
             [
                 {
                     "text":
-                        vip_text,
+                        vip_text_value,
 
                     "callback_data":
                         CALLBACK_VIP,
@@ -466,7 +471,7 @@ def main_menu_keyboard(
             [
                 {
                     "text":
-                        channel_text,
+                        channel_text_value,
 
                     "url":
                         get_free_channel_url(),
@@ -476,7 +481,7 @@ def main_menu_keyboard(
             [
                 {
                     "text":
-                        about_text,
+                        about_text_value,
 
                     "callback_data":
                         CALLBACK_ABOUT,
@@ -486,7 +491,7 @@ def main_menu_keyboard(
             [
                 {
                     "text":
-                        help_text,
+                        help_text_value,
 
                     "callback_data":
                         CALLBACK_HELP,
@@ -524,12 +529,84 @@ def back_to_menu_keyboard(
     }
 
 
-def channel_keyboard(
-    language
+def vip_keyboard(
+    telegram_user_id,
+    language,
+):
+    access = (
+        get_effective_access(
+            telegram_user_id
+        )
+    )
+
+    buttons = []
+
+    if (
+        access is not None
+        and access.get(
+            "plan"
+        ) == "VIP"
+        and access.get(
+            "status"
+        ) == "ACTIVE"
+    ):
+        if language == "ru":
+            access_text = (
+                "🔐 Получить доступ в VIP"
+            )
+
+        else:
+            access_text = (
+                "🔐 Get VIP Access"
+            )
+
+        buttons.append(
+            [
+                {
+                    "text":
+                        access_text,
+
+                    "callback_data":
+                        CALLBACK_VIP_ACCESS,
+                }
+            ]
+        )
+
+    if language == "ru":
+        back_text = (
+            "🏠 Главное меню"
+        )
+
+    else:
+        back_text = (
+            "🏠 Main Menu"
+        )
+
+    buttons.append(
+        [
+            {
+                "text":
+                    back_text,
+
+                "callback_data":
+                    CALLBACK_MENU,
+            }
+        ]
+    )
+
+    return {
+        "inline_keyboard":
+            buttons
+    }
+
+
+def vip_invite_keyboard(
+    language,
+    invite_link,
 ):
     if language == "ru":
         open_text = (
-            "📢 Открыть канал"
+            "🔐 Войти в VIP"
         )
 
         back_text = (
@@ -538,7 +615,7 @@ def channel_keyboard(
 
     else:
         open_text = (
-            "📢 Open Channel"
+            "🔐 Join VIP"
         )
 
         back_text = (
@@ -553,7 +630,7 @@ def channel_keyboard(
                         open_text,
 
                     "url":
-                        get_free_channel_url(),
+                        invite_link,
                 }
             ],
 
@@ -679,16 +756,12 @@ def status_text(
     if access is None:
         if language == "ru":
             return (
-                "Аккаунт ещё не зарегистрирован.\n"
-                "\n"
-                "Нажмите START."
+                "Аккаунт ещё не зарегистрирован."
             )
 
         return (
             "Your account is not "
-            "registered yet.\n"
-            "\n"
-            "Press START."
+            "registered yet."
         )
 
     plan = (
@@ -754,9 +827,47 @@ def status_text(
 
 
 def vip_text(
-    language
+    telegram_user_id,
+    language,
 ):
+    access = (
+        get_effective_access(
+            telegram_user_id
+        )
+    )
+
+    is_vip = (
+        access is not None
+        and access.get(
+            "plan"
+        ) == "VIP"
+        and access.get(
+            "status"
+        ) == "ACTIVE"
+    )
+
     if language == "ru":
+        if is_vip:
+            expires_at = (
+                access.get(
+                    "expires_at"
+                )
+                or "Без ограничения"
+            )
+
+            return (
+                "⭐ <b>AS VIP</b>\n"
+                "\n"
+                "✅ Ваша VIP-подписка активна.\n"
+                "\n"
+                "Действует до: "
+                f"<b>{html.escape(str(expires_at))} UTC</b>\n"
+                "\n"
+                "Нажмите кнопку ниже, "
+                "чтобы получить персональный "
+                "доступ в VIP-канал."
+            )
+
         return (
             "⭐ <b>AS VIP</b>\n"
             "\n"
@@ -772,11 +883,29 @@ def vip_text(
             "исследование и тестирование.\n"
             "\n"
             "Поэтому покупка VIP пока "
-            "<b>недоступна</b>.\n"
+            "<b>недоступна</b>."
+        )
+
+    if is_vip:
+        expires_at = (
+            access.get(
+                "expires_at"
+            )
+            or "No expiration"
+        )
+
+        return (
+            "⭐ <b>AS VIP</b>\n"
             "\n"
-            "Когда сервис будет готов, "
-            "оформить подписку можно будет "
-            "прямо через этого бота."
+            "✅ Your VIP subscription "
+            "is active.\n"
+            "\n"
+            "Expires: "
+            f"<b>{html.escape(str(expires_at))} UTC</b>\n"
+            "\n"
+            "Press the button below "
+            "to get personal access "
+            "to the VIP channel."
         )
 
     return (
@@ -794,11 +923,72 @@ def vip_text(
         "being researched and tested.\n"
         "\n"
         "VIP access is therefore "
-        "<b>not available for purchase yet</b>.\n"
+        "<b>not available for purchase yet</b>."
+    )
+
+
+def vip_invite_text(
+    language,
+    expires_at,
+):
+    safe_expires = html.escape(
+        str(
+            expires_at
+        )
+    )
+
+    if language == "ru":
+        return (
+            "🔐 <b>Персональный VIP-доступ</b>\n"
+            "\n"
+            "Ссылка создана специально "
+            "для вашего Telegram-аккаунта.\n"
+            "\n"
+            "⏳ Ссылка действует до:\n"
+            f"<b>{safe_expires} UTC</b>\n"
+            "\n"
+            "После нажатия Telegram "
+            "отправит запрос на вступление.\n"
+            "Бот автоматически проверит "
+            "ваш Telegram ID и одобрит доступ.\n"
+            "\n"
+            "⚠️ Не передавайте эту ссылку "
+            "другим людям."
+        )
+
+    return (
+        "🔐 <b>Personal VIP Access</b>\n"
         "\n"
-        "When the service is ready, "
-        "subscription options will appear "
-        "directly in this bot."
+        "This link was created specifically "
+        "for your Telegram account.\n"
+        "\n"
+        "⏳ Link valid until:\n"
+        f"<b>{safe_expires} UTC</b>\n"
+        "\n"
+        "After you press Join VIP, "
+        "Telegram will send a join request.\n"
+        "The bot will verify your Telegram ID "
+        "and approve access automatically.\n"
+        "\n"
+        "⚠️ Do not share this link "
+        "with other people."
+    )
+
+
+def vip_error_text(
+    language
+):
+    if language == "ru":
+        return (
+            "⚠️ <b>Не удалось создать доступ</b>\n"
+            "\n"
+            "Попробуйте ещё раз немного позже."
+        )
+
+    return (
+        "⚠️ <b>Could not create VIP access</b>\n"
+        "\n"
+        "Please try again later."
     )
 
 
@@ -820,8 +1010,10 @@ def about_text(
             "• понятные Entry / SL / TP\n"
             "• прозрачная статистика\n"
             "• убыточные сделки не скрываются\n"
-            "• никаких обещаний гарантированной прибыли\n"
-            "• сначала тестирование, потом запуск\n"
+            "• никаких обещаний "
+            "гарантированной прибыли\n"
+            "• сначала тестирование, "
+            "потом запуск\n"
             "\n"
             "🕒 Рыночное время отображается "
             "в <b>UTC</b>."
@@ -862,21 +1054,13 @@ def help_text(
             "ваш текущий тариф\n"
             "\n"
             "⭐ <b>VIP</b> — "
-            "информация о VIP\n"
+            "VIP и доступ в канал\n"
             "\n"
             "📢 <b>Бесплатный канал</b> — "
             "публичный Telegram-канал\n"
             "\n"
             "ℹ️ <b>О проекте</b> — "
-            "информация об AS\n"
-            "\n"
-            "Также доступны команды:\n"
-            "/start\n"
-            "/status\n"
-            "/vip\n"
-            "/channel\n"
-            "/about\n"
-            "/help"
+            "информация об AS"
         )
 
     return (
@@ -889,70 +1073,18 @@ def help_text(
         "your current plan\n"
         "\n"
         "⭐ <b>VIP</b> — "
-        "VIP information\n"
+        "VIP and channel access\n"
         "\n"
         "📢 <b>Free Channel</b> — "
         "public Telegram channel\n"
         "\n"
         "ℹ️ <b>About</b> — "
-        "information about AS\n"
-        "\n"
-        "Commands are also available:\n"
-        "/start\n"
-        "/status\n"
-        "/vip\n"
-        "/channel\n"
-        "/about\n"
-        "/help"
-    )
-
-
-def channel_text(
-    language
-):
-    if language == "ru":
-        return (
-            "📢 <b>Бесплатный канал</b>\n"
-            "\n"
-            "Анализ рынка, новости, "
-            "исследования и прозрачная "
-            "статистика.\n"
-            "\n"
-            "Нажмите кнопку ниже, "
-            "чтобы открыть канал."
-        )
-
-    return (
-        "📢 <b>Free Channel</b>\n"
-        "\n"
-        "Market analysis, news, "
-        "research and transparent "
-        "statistics.\n"
-        "\n"
-        "Press the button below "
-        "to open the channel."
-    )
-
-
-def unknown_text(
-    language
-):
-    if language == "ru":
-        return (
-            "Я не распознал эту команду.\n"
-            "\n"
-            "Откройте главное меню."
-        )
-
-    return (
-        "I don't recognize that command.\n"
-        "\n"
-        "Open the main menu."
+        "information about AS"
     )
 
 
 # ============================================================
-# USER REGISTRATION
+# USER
 # ============================================================
 
 def register_telegram_user(
@@ -1024,46 +1156,41 @@ def send_start_screen(
         else "FREE"
     )
 
-    payload = {
-        "chat_id":
-            chat_id,
-
-        "text":
-            start_text(
-                language=language,
-                first_name=(
-                    telegram_user.get(
-                        "first_name"
-                    )
-                ),
-                plan=plan,
-            ),
-
-        "parse_mode":
-            "HTML",
-
-        "disable_web_page_preview":
-            True,
-
-        # Removes the old persistent
-        # reply keyboard from the
-        # previous bot version.
-        "reply_markup": {
-            "remove_keyboard":
-                True,
-        },
-    }
-
-    result = telegram_request(
+    first_result = telegram_request(
         "sendMessage",
-        payload,
+        {
+            "chat_id":
+                chat_id,
+
+            "text":
+                start_text(
+                    language=language,
+                    first_name=(
+                        telegram_user.get(
+                            "first_name"
+                        )
+                    ),
+                    plan=plan,
+                ),
+
+            "parse_mode":
+                "HTML",
+
+            "disable_web_page_preview":
+                True,
+
+            "reply_markup": {
+                "remove_keyboard":
+                    True,
+            },
+        },
     )
 
-    if result is None:
+    if first_result is None:
         return False
 
     message = (
-        result.get(
+        first_result.get(
             "result"
         )
         or {}
@@ -1078,9 +1205,7 @@ def send_start_screen(
     if message_id is None:
         return True
 
-    # Add the large inline OPEN MENU
-    # button to the same message.
-    edit_result = telegram_request(
+    telegram_request(
         "editMessageReplyMarkup",
         {
             "chat_id":
@@ -1096,26 +1221,11 @@ def send_start_screen(
         },
     )
 
-    if edit_result is None:
-        send_inline_message(
-            chat_id=chat_id,
-            text=(
-                "🚀"
-                if language == "en"
-                else "🚀"
-            ),
-            reply_markup=(
-                start_keyboard(
-                    language
-                )
-            ),
-        )
-
     return True
 
 
 # ============================================================
-# COMMANDS
+# COMMAND MENU
 # ============================================================
 
 def set_bot_commands():
@@ -1250,7 +1360,7 @@ def set_bot_commands():
 
 
 # ============================================================
-# MESSAGE HANDLER
+# COMMAND HANDLER
 # ============================================================
 
 def normalize_command(
@@ -1344,10 +1454,8 @@ def process_private_message(
 
     if command == "/start":
         send_start_screen(
-            chat_id=chat_id,
-            telegram_user=(
-                telegram_user
-            ),
+            chat_id,
+            telegram_user,
         )
 
         access = (
@@ -1378,67 +1486,28 @@ def process_private_message(
 
     if command == "/status":
         send_inline_message(
-            chat_id=chat_id,
-
-            text=status_text(
+            chat_id,
+            status_text(
                 telegram_user_id,
                 language,
             ),
-
-            reply_markup=(
-                back_to_menu_keyboard(
-                    language
-                )
+            back_to_menu_keyboard(
+                language
             ),
-        )
-
-        print(
-            "USER BOT | "
-            "STATUS | "
-            f"UserDB="
-            f"{user['id']}",
-            flush=True,
         )
 
         return
 
     if command == "/vip":
         send_inline_message(
-            chat_id=chat_id,
-
-            text=vip_text(
-                language
+            chat_id,
+            vip_text(
+                telegram_user_id,
+                language,
             ),
-
-            reply_markup=(
-                back_to_menu_keyboard(
-                    language
-                )
-            ),
-        )
-
-        print(
-            "USER BOT | "
-            "VIP | "
-            f"UserDB="
-            f"{user['id']}",
-            flush=True,
-        )
-
-        return
-
-    if command == "/channel":
-        send_inline_message(
-            chat_id=chat_id,
-
-            text=channel_text(
-                language
-            ),
-
-            reply_markup=(
-                channel_keyboard(
-                    language
-                )
+            vip_keyboard(
+                telegram_user_id,
+                language,
             ),
         )
 
@@ -1446,16 +1515,12 @@ def process_private_message(
 
     if command == "/about":
         send_inline_message(
-            chat_id=chat_id,
-
-            text=about_text(
+            chat_id,
+            about_text(
                 language
             ),
-
-            reply_markup=(
-                back_to_menu_keyboard(
-                    language
-                )
+            back_to_menu_keyboard(
+                language
             ),
         )
 
@@ -1463,34 +1528,16 @@ def process_private_message(
 
     if command == "/help":
         send_inline_message(
-            chat_id=chat_id,
-
-            text=help_text(
+            chat_id,
+            help_text(
                 language
             ),
-
-            reply_markup=(
-                back_to_menu_keyboard(
-                    language
-                )
+            back_to_menu_keyboard(
+                language
             ),
         )
 
         return
-
-    send_inline_message(
-        chat_id=chat_id,
-
-        text=unknown_text(
-            language
-        ),
-
-        reply_markup=(
-            main_menu_keyboard(
-                language
-            )
-        ),
-    )
 
 
 # ============================================================
@@ -1527,18 +1574,6 @@ def process_callback_query(
         or {}
     )
 
-    if (
-        chat.get(
-            "type"
-        )
-        != "private"
-    ):
-        answer_callback_query(
-            callback_query_id
-        )
-
-        return
-
     chat_id = (
         chat.get(
             "id"
@@ -1557,15 +1592,15 @@ def process_callback_query(
         )
     )
 
+    answer_callback_query(
+        callback_query_id
+    )
+
     if (
         chat_id is None
         or message_id is None
         or telegram_user_id is None
     ):
-        answer_callback_query(
-            callback_query_id
-        )
-
         return
 
     user = register_telegram_user(
@@ -1583,30 +1618,20 @@ def process_callback_query(
         or ""
     )
 
-    answer_callback_query(
-        callback_query_id
-    )
-
     if data == CALLBACK_MENU:
         edit_inline_message(
-            chat_id=chat_id,
-
-            message_id=message_id,
-
-            text=main_menu_text(
+            chat_id,
+            message_id,
+            main_menu_text(
                 language
             ),
-
-            reply_markup=(
-                main_menu_keyboard(
-                    language
-                )
+            main_menu_keyboard(
+                language
             ),
         )
 
         print(
-            "USER BOT | "
-            "MENU | "
+            "USER BOT | MENU | "
             f"UserDB="
             f"{user['id'] if user else 'n/a'}",
             flush=True,
@@ -1616,25 +1641,19 @@ def process_callback_query(
 
     if data == CALLBACK_STATUS:
         edit_inline_message(
-            chat_id=chat_id,
-
-            message_id=message_id,
-
-            text=status_text(
+            chat_id,
+            message_id,
+            status_text(
                 telegram_user_id,
                 language,
             ),
-
-            reply_markup=(
-                back_to_menu_keyboard(
-                    language
-                )
+            back_to_menu_keyboard(
+                language
             ),
         )
 
         print(
-            "USER BOT | "
-            "STATUS | "
+            "USER BOT | STATUS | "
             f"UserDB="
             f"{user['id'] if user else 'n/a'}",
             flush=True,
@@ -1644,24 +1663,20 @@ def process_callback_query(
 
     if data == CALLBACK_VIP:
         edit_inline_message(
-            chat_id=chat_id,
-
-            message_id=message_id,
-
-            text=vip_text(
-                language
+            chat_id,
+            message_id,
+            vip_text(
+                telegram_user_id,
+                language,
             ),
-
-            reply_markup=(
-                back_to_menu_keyboard(
-                    language
-                )
+            vip_keyboard(
+                telegram_user_id,
+                language,
             ),
         )
 
         print(
-            "USER BOT | "
-            "VIP | "
+            "USER BOT | VIP | "
             f"UserDB="
             f"{user['id'] if user else 'n/a'}",
             flush=True,
@@ -1669,20 +1684,73 @@ def process_callback_query(
 
         return
 
-    if data == CALLBACK_ABOUT:
-        edit_inline_message(
-            chat_id=chat_id,
+    if data == CALLBACK_VIP_ACCESS:
+        result = create_vip_invite(
+            telegram_user_id
+        )
 
-            message_id=message_id,
+        if (
+            result
+            and result.get(
+                "ok"
+            )
+        ):
+            invite_link = (
+                result[
+                    "invite_link"
+                ]
+            )
 
-            text=about_text(
-                language
-            ),
+            expires_at = (
+                result[
+                    "expires_at"
+                ]
+            )
 
-            reply_markup=(
+            edit_inline_message(
+                chat_id,
+                message_id,
+                vip_invite_text(
+                    language,
+                    expires_at,
+                ),
+                vip_invite_keyboard(
+                    language,
+                    invite_link,
+                ),
+            )
+
+            print(
+                "USER BOT | "
+                "VIP INVITE | "
+                f"UserDB="
+                f"{user['id'] if user else 'n/a'}",
+                flush=True,
+            )
+
+        else:
+            edit_inline_message(
+                chat_id,
+                message_id,
+                vip_error_text(
+                    language
+                ),
                 back_to_menu_keyboard(
                     language
-                )
+                ),
+            )
+
+        return
+
+    if data == CALLBACK_ABOUT:
+        edit_inline_message(
+            chat_id,
+            message_id,
+            about_text(
+                language
+            ),
+            back_to_menu_keyboard(
+                language
             ),
         )
 
@@ -1690,38 +1758,17 @@ def process_callback_query(
 
     if data == CALLBACK_HELP:
         edit_inline_message(
-            chat_id=chat_id,
-
-            message_id=message_id,
-
-            text=help_text(
+            chat_id,
+            message_id,
+            help_text(
                 language
             ),
-
-            reply_markup=(
-                back_to_menu_keyboard(
-                    language
-                )
+            back_to_menu_keyboard(
+                language
             ),
         )
 
         return
-
-    edit_inline_message(
-        chat_id=chat_id,
-
-        message_id=message_id,
-
-        text=main_menu_text(
-            language
-        ),
-
-        reply_markup=(
-            main_menu_keyboard(
-                language
-            )
-        ),
-    )
 
 
 # ============================================================
@@ -1731,6 +1778,19 @@ def process_callback_query(
 def process_update(
     update
 ):
+    join_request = (
+        update.get(
+            "chat_join_request"
+        )
+    )
+
+    if join_request is not None:
+        process_vip_join_request(
+            join_request
+        )
+
+        return
+
     callback_query = (
         update.get(
             "callback_query"
@@ -1767,11 +1827,11 @@ def fetch_updates(
         "timeout":
             POLL_TIMEOUT_SECONDS,
 
-        "allowed_updates":
-            [
-                "message",
-                "callback_query",
-            ],
+        "allowed_updates": [
+            "message",
+            "callback_query",
+            "chat_join_request",
+        ],
     }
 
     if offset is not None:
@@ -1791,6 +1851,13 @@ def fetch_updates(
 
 def polling_loop():
     init_user_bot_state_table()
+
+    init_vip_access_table()
+
+    print(
+        "VIP access: database ready",
+        flush=True,
+    )
 
     set_bot_commands()
 
@@ -1815,7 +1882,7 @@ def polling_loop():
     while True:
         try:
             result = fetch_updates(
-                offset=offset
+                offset
             )
 
             if result is None:
