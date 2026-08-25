@@ -70,6 +70,11 @@ from news_digest import (
     process_news_digest,
 )
 
+from health_monitor import (
+    init_health_monitor_table,
+    process_health_monitor,
+)
+
 
 CANDLE_CLOSE_DELAY_SECONDS = 15
 
@@ -731,6 +736,17 @@ def analyze_once():
             flush=True,
         )
 
+    try:
+        process_health_monitor()
+
+    except Exception as error:
+        print(
+            "HEALTH MONITOR ERROR | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
 
 def seconds_until_next_check():
     now = time.time()
@@ -767,6 +783,8 @@ def main():
     init_economic_calendar()
 
     init_news_digest_tables()
+
+    init_health_monitor_table()
 
     print(
         "Multi-market analysis engine started",
@@ -841,6 +859,13 @@ def main():
         "News digest: "
         "10:30 & 16:30 UTC -> "
         "Free channel",
+        flush=True,
+    )
+
+    print(
+        "Health monitor: "
+        "stale market data >15min -> "
+        "Private channel",
         flush=True,
     )
 
