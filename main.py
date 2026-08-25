@@ -6,7 +6,7 @@ from datetime import (
 )
 
 from config import (
-    SYMBOL,
+    SYMBOLS,
     INTERVAL,
 )
 
@@ -94,13 +94,16 @@ INTERVAL_SECONDS = (
 )
 
 
-def format_result(result):
+def format_result(
+    symbol,
+    result,
+):
     return (
         f"["
         f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
         f"] "
 
-        f"{SYMBOL} {INTERVAL} | "
+        f"{symbol} {INTERVAL} | "
 
         f"Candle="
         f"{result['datetime']} | "
@@ -153,6 +156,8 @@ def print_new_virtual_trades(
         print(
             "VIRTUAL TRADE V2 OPENED | "
 
+            f"{trade['symbol']} | "
+
             f"ID="
             f"{trade['id']} | "
 
@@ -201,6 +206,8 @@ def print_trade_results(
             print(
                 "VIRTUAL TRADE V2 RESULT | "
 
+                f"{trade['symbol']} | "
+
                 f"ID="
                 f"{trade['trade_id']} | "
 
@@ -216,6 +223,8 @@ def print_trade_results(
         else:
             print(
                 "VIRTUAL TRADE V2 CLOSED | "
+
+                f"{trade['symbol']} | "
 
                 f"ID="
                 f"{trade['trade_id']} | "
@@ -243,9 +252,13 @@ def print_trade_results(
         )
 
 
-def print_trade_summary():
+def print_trade_summary(
+    symbol,
+):
     summary = (
-        get_trade_summary()
+        get_trade_summary(
+            symbol=symbol
+        )
     )
 
     total = (
@@ -257,7 +270,8 @@ def print_trade_summary():
         return
 
     print(
-        "----- VIRTUAL TRADE V2 STATISTICS -----",
+        f"----- {symbol} "
+        f"VIRTUAL TRADE V2 STATISTICS -----",
         flush=True,
     )
 
@@ -292,16 +306,21 @@ def print_trade_summary():
     )
 
 
-def print_outcome_summary():
+def print_outcome_summary(
+    symbol,
+):
     summary = (
-        get_outcome_summary()
+        get_outcome_summary(
+            symbol=symbol
+        )
     )
 
     if not summary:
         return
 
     print(
-        "----- 15/30/60 RESEARCH -----",
+        f"----- {symbol} "
+        f"15/30/60 RESEARCH -----",
         flush=True,
     )
 
@@ -343,14 +362,19 @@ def print_outcome_summary():
         )
 
 
-def analyze_once():
+def analyze_symbol(
+    symbol,
+):
     candles = (
-        fetch_candles()
+        fetch_candles(
+            symbol
+        )
     )
 
     result = (
         analyze_market(
-            candles
+            candles,
+            symbol,
         )
     )
 
@@ -364,7 +388,8 @@ def analyze_once():
 
     print(
         format_result(
-            result
+            symbol,
+            result,
         ),
         flush=True,
     )
@@ -372,7 +397,7 @@ def analyze_once():
     saved, analysis_id = (
         save_analysis(
             created_at=created_at,
-            symbol=SYMBOL,
+            symbol=symbol,
             interval=INTERVAL,
             result=result,
         )
@@ -380,14 +405,16 @@ def analyze_once():
 
     if saved:
         print(
+            f"{symbol} | "
             f"New candle saved | "
-            f"Total records: "
-            f"{count_records()}",
+            f"Records="
+            f"{count_records(symbol)}",
             flush=True,
         )
 
     else:
         print(
+            f"{symbol} | "
             f"Candle "
             f"{result['datetime']} "
             f"already exists | skipped",
@@ -403,7 +430,7 @@ def analyze_once():
             create_signal_event_if_new(
                 analysis_id=analysis_id,
                 created_at=created_at,
-                symbol=SYMBOL,
+                symbol=symbol,
                 interval=INTERVAL,
                 result=result,
             )
@@ -413,6 +440,8 @@ def analyze_once():
             print(
                 "NEW SIGNAL EVENT | "
 
+                f"{symbol} | "
+
                 f"{result['signal']} | "
 
                 f"Entry="
@@ -421,8 +450,8 @@ def analyze_once():
                 f"SetupScore="
                 f"{result['setup_score']}/100 | "
 
-                f"Total signals="
-                f"{count_signal_events()}",
+                f"Symbol signals="
+                f"{count_signal_events(symbol)}",
                 flush=True,
             )
 
@@ -431,6 +460,7 @@ def analyze_once():
             == "CONTINUATION"
         ):
             print(
+                f"{symbol} | "
                 f"{result['signal']} "
                 f"setup continues | "
                 f"no new signal",
@@ -438,7 +468,9 @@ def analyze_once():
             )
 
     new_trades = (
-        ensure_virtual_trades()
+        ensure_virtual_trades(
+            symbol
+        )
     )
 
     if new_trades:
@@ -449,7 +481,8 @@ def analyze_once():
 
     trade_results = (
         evaluate_open_trades(
-            candles
+            candles,
+            symbol,
         )
     )
 
@@ -458,18 +491,23 @@ def analyze_once():
             trade_results
         )
 
-        print_trade_summary()
+        print_trade_summary(
+            symbol
+        )
 
     outcomes = (
         evaluate_pending_signals(
-            candles
+            candles,
+            symbol,
         )
     )
 
     if outcomes:
         for outcome in outcomes:
             print(
-                f"OUTCOME | "
+                "OUTCOME | "
+
+                f"{outcome['symbol']} | "
 
                 f"{outcome['signal']} | "
 
@@ -489,11 +527,52 @@ def analyze_once():
                 flush=True,
             )
 
-        print_outcome_summary()
+        print_outcome_summary(
+            symbol
+        )
 
-    send_daily_report_if_due()
 
-    process_economic_calendar()
+def analyze_once():
+    for symbol in SYMBOLS:
+        try:
+            analyze_symbol(
+                symbol
+            )
+
+        except Exception as error:
+            print(
+                f"MARKET ERROR | "
+                f"{symbol} | "
+                f"{type(error).__name__}: "
+                f"{error}",
+                flush=True,
+            )
+
+    # These are channel services,
+    # so they run once per cycle,
+    # not once for every symbol.
+
+    try:
+        send_daily_report_if_due()
+
+    except Exception as error:
+        print(
+            "DAILY REPORT ERROR | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+    try:
+        process_economic_calendar()
+
+    except Exception as error:
+        print(
+            "CALENDAR ERROR | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
 
 
 def seconds_until_next_check():
@@ -527,7 +606,15 @@ def main():
     init_economic_calendar()
 
     print(
-        "Forex analysis engine started",
+        "Multi-market analysis engine started",
+        flush=True,
+    )
+
+    print(
+        "Symbols: "
+        + ", ".join(
+            SYMBOLS
+        ),
         flush=True,
     )
 
@@ -537,20 +624,19 @@ def main():
         flush=True,
     )
 
-    print(
-        f"Signal events: "
-        f"{count_signal_events()}",
-        flush=True,
-    )
-
-    print(
-        f"Virtual trades V2: "
-        f"{count_virtual_trades()} | "
-
-        f"Open: "
-        f"{count_open_virtual_trades()}",
-        flush=True,
-    )
+    for symbol in SYMBOLS:
+        print(
+            f"{symbol} | "
+            f"Records="
+            f"{count_records(symbol)} | "
+            f"Signals="
+            f"{count_signal_events(symbol)} | "
+            f"V2 Trades="
+            f"{count_virtual_trades(symbol)} | "
+            f"Open="
+            f"{count_open_virtual_trades(symbol)}",
+            flush=True,
+        )
 
     print(
         f"Schedule: every "
