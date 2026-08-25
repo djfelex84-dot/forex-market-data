@@ -15,6 +15,7 @@ from vip_access import (
     init_vip_access_table,
     create_vip_invite,
     process_vip_join_request,
+    sync_expired_vip_access,
 )
 
 
@@ -41,12 +42,15 @@ API_BASE_URL = (
 POLL_TIMEOUT_SECONDS = 25
 RETRY_SECONDS = 5
 
+VIP_SYNC_INTERVAL_SECONDS = 60
+
 STATE_KEY = "last_update_id"
 
 CALLBACK_MENU = "MENU"
 CALLBACK_STATUS = "STATUS"
 CALLBACK_VIP = "VIP"
 CALLBACK_VIP_ACCESS = "VIP_ACCESS"
+CALLBACK_CHANNEL = "CHANNEL"
 CALLBACK_ABOUT = "ABOUT"
 CALLBACK_HELP = "HELP"
 
@@ -64,9 +68,7 @@ def get_connection():
         DB_PATH
     )
 
-    connection.row_factory = (
-        sqlite3.Row
-    )
+    connection.row_factory = sqlite3.Row
 
     return connection
 
@@ -77,11 +79,8 @@ def init_user_bot_state_table():
             """
             CREATE TABLE IF NOT EXISTS
             telegram_user_bot_state (
-                state_key TEXT
-                PRIMARY KEY,
-
-                state_value TEXT
-                NOT NULL
+                state_key TEXT PRIMARY KEY,
+                state_value TEXT NOT NULL
             )
             """
         )
@@ -93,11 +92,8 @@ def get_last_update_id():
     with get_connection() as connection:
         row = connection.execute(
             """
-            SELECT
-                state_value
-
+            SELECT state_value
             FROM telegram_user_bot_state
-
             WHERE state_key = ?
             """,
             (
@@ -110,9 +106,7 @@ def get_last_update_id():
 
     try:
         return int(
-            row[
-                "state_value"
-            ]
+            row["state_value"]
         )
 
     except (
@@ -128,21 +122,15 @@ def save_last_update_id(
     with get_connection() as connection:
         connection.execute(
             """
-            INSERT INTO
-            telegram_user_bot_state (
+            INSERT INTO telegram_user_bot_state (
                 state_key,
                 state_value
             )
-
             VALUES (?, ?)
 
-            ON CONFLICT (
-                state_key
-            )
-
+            ON CONFLICT (state_key)
             DO UPDATE SET
-                state_value =
-                    excluded.state_value
+                state_value = excluded.state_value
             """,
             (
                 STATE_KEY,
@@ -245,9 +233,7 @@ def answer_callback_query(
         },
     )
 
-    return (
-        result is not None
-    )
+    return result is not None
 
 
 def send_inline_message(
@@ -270,9 +256,9 @@ def send_inline_message(
     }
 
     if reply_markup is not None:
-        payload[
-            "reply_markup"
-        ] = reply_markup
+        payload["reply_markup"] = (
+            reply_markup
+        )
 
     return telegram_request(
         "sendMessage",
@@ -304,18 +290,16 @@ def edit_inline_message(
     }
 
     if reply_markup is not None:
-        payload[
-            "reply_markup"
-        ] = reply_markup
+        payload["reply_markup"] = (
+            reply_markup
+        )
 
     result = telegram_request(
         "editMessageText",
         payload,
     )
 
-    return (
-        result is not None
-    )
+    return result is not None
 
 
 # ============================================================
@@ -350,9 +334,7 @@ def get_free_channel_url():
         or "@ASForexCrypto"
     )
 
-    if value.startswith(
-        "@"
-    ):
+    if value.startswith("@"):
         return (
             "https://t.me/"
             + value[1:]
@@ -405,44 +387,44 @@ def main_menu_keyboard(
     language
 ):
     if language == "ru":
-        status_text_value = (
+        status_button = (
             "📊 Мой статус"
         )
 
-        vip_text_value = (
+        vip_button = (
             "⭐ VIP"
         )
 
-        channel_text_value = (
+        channel_button = (
             "📢 Бесплатный канал"
         )
 
-        about_text_value = (
+        about_button = (
             "ℹ️ О проекте"
         )
 
-        help_text_value = (
+        help_button = (
             "❓ Помощь"
         )
 
     else:
-        status_text_value = (
+        status_button = (
             "📊 My Status"
         )
 
-        vip_text_value = (
+        vip_button = (
             "⭐ VIP"
         )
 
-        channel_text_value = (
+        channel_button = (
             "📢 Free Channel"
         )
 
-        about_text_value = (
+        about_button = (
             "ℹ️ About"
         )
 
-        help_text_value = (
+        help_button = (
             "❓ Help"
         )
 
@@ -451,47 +433,43 @@ def main_menu_keyboard(
             [
                 {
                     "text":
-                        status_text_value,
+                        status_button,
 
                     "callback_data":
                         CALLBACK_STATUS,
                 }
             ],
-
             [
                 {
                     "text":
-                        vip_text_value,
+                        vip_button,
 
                     "callback_data":
                         CALLBACK_VIP,
                 }
             ],
-
             [
                 {
                     "text":
-                        channel_text_value,
+                        channel_button,
 
-                    "url":
-                        get_free_channel_url(),
+                    "callback_data":
+                        CALLBACK_CHANNEL,
                 }
             ],
-
             [
                 {
                     "text":
-                        about_text_value,
+                        about_button,
 
                     "callback_data":
                         CALLBACK_ABOUT,
                 }
             ],
-
             [
                 {
                     "text":
-                        help_text_value,
+                        help_button,
 
                     "callback_data":
                         CALLBACK_HELP,
@@ -529,19 +507,62 @@ def back_to_menu_keyboard(
     }
 
 
+def channel_keyboard(
+    language
+):
+    if language == "ru":
+        open_text = (
+            "📢 Открыть канал"
+        )
+
+        back_text = (
+            "🏠 Главное меню"
+        )
+
+    else:
+        open_text = (
+            "📢 Open Channel"
+        )
+
+        back_text = (
+            "🏠 Main Menu"
+        )
+
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text":
+                        open_text,
+
+                    "url":
+                        get_free_channel_url(),
+                }
+            ],
+            [
+                {
+                    "text":
+                        back_text,
+
+                    "callback_data":
+                        CALLBACK_MENU,
+                }
+            ],
+        ]
+    }
+
+
 def vip_keyboard(
     telegram_user_id,
     language,
 ):
-    access = (
-        get_effective_access(
-            telegram_user_id
-        )
+    access = get_effective_access(
+        telegram_user_id
     )
 
     buttons = []
 
-    if (
+    is_active_vip = (
         access is not None
         and access.get(
             "plan"
@@ -549,7 +570,9 @@ def vip_keyboard(
         and access.get(
             "status"
         ) == "ACTIVE"
-    ):
+    )
+
+    if is_active_vip:
         if language == "ru":
             access_text = (
                 "🔐 Получить доступ в VIP"
@@ -633,7 +656,6 @@ def vip_invite_keyboard(
                         invite_link,
                 }
             ],
-
             [
                 {
                     "text":
@@ -657,13 +679,11 @@ def start_text(
     plan,
 ):
     safe_name = html.escape(
-        first_name
-        or ""
+        first_name or ""
     )
 
     safe_plan = html.escape(
-        plan
-        or "FREE"
+        plan or "FREE"
     )
 
     if language == "ru":
@@ -671,10 +691,9 @@ def start_text(
             greeting = (
                 f"Привет, {safe_name}!"
             )
+
         else:
-            greeting = (
-                "Привет!"
-            )
+            greeting = "Привет!"
 
         return (
             f"👋 <b>{greeting}</b>\n"
@@ -700,10 +719,9 @@ def start_text(
         greeting = (
             f"Hello, {safe_name}!"
         )
+
     else:
-        greeting = (
-            "Hello!"
-        )
+        greeting = "Hello!"
 
     return (
         f"👋 <b>{greeting}</b>\n"
@@ -747,10 +765,8 @@ def status_text(
     telegram_user_id,
     language,
 ):
-    access = (
-        get_effective_access(
-            telegram_user_id
-        )
+    access = get_effective_access(
+        telegram_user_id
     )
 
     if access is None:
@@ -771,14 +787,22 @@ def status_text(
         or "FREE"
     )
 
-    expires_at = (
+    status = (
         access.get(
-            "expires_at"
+            "status"
         )
+        or "ACTIVE"
+    )
+
+    expires_at = access.get(
+        "expires_at"
     )
 
     if language == "ru":
-        if plan == "VIP":
+        if (
+            plan == "VIP"
+            and status == "ACTIVE"
+        ):
             expires_text = (
                 expires_at
                 or "Без ограничения"
@@ -802,7 +826,10 @@ def status_text(
             "<b>без ограничения</b>"
         )
 
-    if plan == "VIP":
+    if (
+        plan == "VIP"
+        and status == "ACTIVE"
+    ):
         expires_text = (
             expires_at
             or "No expiration"
@@ -830,10 +857,8 @@ def vip_text(
     telegram_user_id,
     language,
 ):
-    access = (
-        get_effective_access(
-            telegram_user_id
-        )
+    access = get_effective_access(
+        telegram_user_id
     )
 
     is_vip = (
@@ -871,7 +896,7 @@ def vip_text(
         return (
             "⭐ <b>AS VIP</b>\n"
             "\n"
-            "VIP будет предоставлять доступ "
+            "VIP предоставляет доступ "
             "к торговым сигналам с:\n"
             "\n"
             "🎯 Entry\n"
@@ -911,7 +936,7 @@ def vip_text(
     return (
         "⭐ <b>AS VIP</b>\n"
         "\n"
-        "VIP will provide access "
+        "VIP provides access "
         "to trading signals with:\n"
         "\n"
         "🎯 Entry\n"
@@ -982,13 +1007,42 @@ def vip_error_text(
         return (
             "⚠️ <b>Не удалось создать доступ</b>\n"
             "\n"
-            "Попробуйте ещё раз немного позже."
+            "Проверьте, что VIP-подписка "
+            "активна, и попробуйте ещё раз."
         )
 
     return (
         "⚠️ <b>Could not create VIP access</b>\n"
         "\n"
-        "Please try again later."
+        "Check that your VIP subscription "
+        "is active and try again."
+    )
+
+
+def channel_text(
+    language
+):
+    if language == "ru":
+        return (
+            "📢 <b>Бесплатный канал</b>\n"
+            "\n"
+            "Анализ рынка, новости, "
+            "исследования и прозрачная "
+            "статистика.\n"
+            "\n"
+            "Нажмите кнопку ниже, "
+            "чтобы открыть канал."
+        )
+
+    return (
+        "📢 <b>Free Channel</b>\n"
+        "\n"
+        "Market analysis, news, "
+        "research and transparent "
+        "statistics.\n"
+        "\n"
+        "Press the button below "
+        "to open the channel."
     )
 
 
@@ -1083,6 +1137,23 @@ def help_text(
     )
 
 
+def unknown_text(
+    language
+):
+    if language == "ru":
+        return (
+            "Я не распознал эту команду.\n"
+            "\n"
+            "Используйте главное меню."
+        )
+
+    return (
+        "I don't recognize that command.\n"
+        "\n"
+        "Please use the main menu."
+    )
+
+
 # ============================================================
 # USER
 # ============================================================
@@ -1125,7 +1196,7 @@ def register_telegram_user(
 
 
 # ============================================================
-# START
+# START SCREEN
 # ============================================================
 
 def send_start_screen(
@@ -1142,10 +1213,8 @@ def send_start_screen(
         )
     )
 
-    access = (
-        get_effective_access(
-            telegram_user_id
-        )
+    access = get_effective_access(
+        telegram_user_id
     )
 
     plan = (
@@ -1196,16 +1265,14 @@ def send_start_screen(
         or {}
     )
 
-    message_id = (
-        message.get(
-            "message_id"
-        )
+    message_id = message.get(
+        "message_id"
     )
 
     if message_id is None:
         return True
 
-    telegram_request(
+    result = telegram_request(
         "editMessageReplyMarkup",
         {
             "chat_id":
@@ -1221,7 +1288,7 @@ def send_start_screen(
         },
     )
 
-    return True
+    return result is not None
 
 
 # ============================================================
@@ -1231,91 +1298,55 @@ def send_start_screen(
 def set_bot_commands():
     english_commands = [
         {
-            "command":
-                "start",
-
-            "description":
-                "Open AS bot",
+            "command": "start",
+            "description": "Open AS bot",
         },
         {
-            "command":
-                "status",
-
-            "description":
-                "My subscription",
+            "command": "status",
+            "description": "My subscription",
         },
         {
-            "command":
-                "vip",
-
-            "description":
-                "VIP information",
+            "command": "vip",
+            "description": "VIP information",
         },
         {
-            "command":
-                "channel",
-
-            "description":
-                "Free channel",
+            "command": "channel",
+            "description": "Free channel",
         },
         {
-            "command":
-                "about",
-
-            "description":
-                "About AS",
+            "command": "about",
+            "description": "About AS",
         },
         {
-            "command":
-                "help",
-
-            "description":
-                "Help",
+            "command": "help",
+            "description": "Help",
         },
     ]
 
     russian_commands = [
         {
-            "command":
-                "start",
-
-            "description":
-                "Открыть бота AS",
+            "command": "start",
+            "description": "Открыть бота AS",
         },
         {
-            "command":
-                "status",
-
-            "description":
-                "Моя подписка",
+            "command": "status",
+            "description": "Моя подписка",
         },
         {
-            "command":
-                "vip",
-
-            "description":
-                "Информация о VIP",
+            "command": "vip",
+            "description": "Информация о VIP",
         },
         {
-            "command":
-                "channel",
-
-            "description":
-                "Бесплатный канал",
+            "command": "channel",
+            "description": "Бесплатный канал",
         },
         {
-            "command":
-                "about",
-
-            "description":
-                "О проекте AS",
+            "command": "about",
+            "description": "О проекте AS",
         },
         {
-            "command":
-                "help",
-
-            "description":
-                "Помощь",
+            "command": "help",
+            "description": "Помощь",
         },
     ]
 
@@ -1397,12 +1428,9 @@ def process_private_message(
         or {}
     )
 
-    if (
-        chat.get(
-            "type"
-        )
-        != "private"
-    ):
+    if chat.get(
+        "type"
+    ) != "private":
         return
 
     telegram_user = (
@@ -1418,10 +1446,8 @@ def process_private_message(
         )
     )
 
-    chat_id = (
-        chat.get(
-            "id"
-        )
+    chat_id = chat.get(
+        "id"
     )
 
     if (
@@ -1458,10 +1484,8 @@ def process_private_message(
             telegram_user,
         )
 
-        access = (
-            get_effective_access(
-                telegram_user_id
-            )
+        access = get_effective_access(
+            telegram_user_id
         )
 
         plan = (
@@ -1475,10 +1499,8 @@ def process_private_message(
         print(
             "USER BOT | "
             "/start | "
-            f"UserDB="
-            f"{user['id']} | "
-            f"Plan="
-            f"{plan}",
+            f"UserDB={user['id']} | "
+            f"Plan={plan}",
             flush=True,
         )
 
@@ -1496,6 +1518,13 @@ def process_private_message(
             ),
         )
 
+        print(
+            "USER BOT | "
+            "STATUS | "
+            f"UserDB={user['id']}",
+            flush=True,
+        )
+
         return
 
     if command == "/vip":
@@ -1508,6 +1537,26 @@ def process_private_message(
             vip_keyboard(
                 telegram_user_id,
                 language,
+            ),
+        )
+
+        print(
+            "USER BOT | "
+            "VIP | "
+            f"UserDB={user['id']}",
+            flush=True,
+        )
+
+        return
+
+    if command == "/channel":
+        send_inline_message(
+            chat_id,
+            channel_text(
+                language
+            ),
+            channel_keyboard(
+                language
             ),
         )
 
@@ -1538,6 +1587,16 @@ def process_private_message(
         )
 
         return
+
+    send_inline_message(
+        chat_id,
+        unknown_text(
+            language
+        ),
+        main_menu_keyboard(
+            language
+        ),
+    )
 
 
 # ============================================================
@@ -1574,16 +1633,12 @@ def process_callback_query(
         or {}
     )
 
-    chat_id = (
-        chat.get(
-            "id"
-        )
+    chat_id = chat.get(
+        "id"
     )
 
-    message_id = (
-        message.get(
-            "message_id"
-        )
+    message_id = message.get(
+        "message_id"
     )
 
     telegram_user_id = (
@@ -1695,17 +1750,13 @@ def process_callback_query(
                 "ok"
             )
         ):
-            invite_link = (
-                result[
-                    "invite_link"
-                ]
-            )
+            invite_link = result[
+                "invite_link"
+            ]
 
-            expires_at = (
-                result[
-                    "expires_at"
-                ]
-            )
+            expires_at = result[
+                "expires_at"
+            ]
 
             edit_inline_message(
                 chat_id,
@@ -1739,6 +1790,20 @@ def process_callback_query(
                     language
                 ),
             )
+
+        return
+
+    if data == CALLBACK_CHANNEL:
+        edit_inline_message(
+            chat_id,
+            message_id,
+            channel_text(
+                language
+            ),
+            channel_keyboard(
+                language
+            ),
+        )
 
         return
 
@@ -1778,10 +1843,8 @@ def process_callback_query(
 def process_update(
     update
 ):
-    join_request = (
-        update.get(
-            "chat_join_request"
-        )
+    join_request = update.get(
+        "chat_join_request"
     )
 
     if join_request is not None:
@@ -1791,10 +1854,8 @@ def process_update(
 
         return
 
-    callback_query = (
-        update.get(
-            "callback_query"
-        )
+    callback_query = update.get(
+        "callback_query"
     )
 
     if callback_query is not None:
@@ -1804,16 +1865,32 @@ def process_update(
 
         return
 
-    message = (
-        update.get(
-            "message"
-        )
+    message = update.get(
+        "message"
     )
 
     if message is not None:
         process_private_message(
             message
         )
+
+
+# ============================================================
+# VIP SUBSCRIPTION SYNC
+# ============================================================
+
+def run_vip_access_sync():
+    try:
+        return sync_expired_vip_access()
+
+    except Exception as error:
+        print(
+            "VIP ACCESS SYNC ERROR | "
+            f"{type(error).__name__}",
+            flush=True,
+        )
+
+        return None
 
 
 # ============================================================
@@ -1835,9 +1912,9 @@ def fetch_updates(
     }
 
     if offset is not None:
-        payload[
-            "offset"
-        ] = offset
+        payload["offset"] = (
+            offset
+        )
 
     return telegram_request(
         "getUpdates",
@@ -1859,6 +1936,11 @@ def polling_loop():
         flush=True,
     )
 
+    print(
+        "VIP access sync: every 60s",
+        flush=True,
+    )
+
     set_bot_commands()
 
     last_update_id = (
@@ -1874,6 +1956,8 @@ def polling_loop():
             + 1
         )
 
+    last_vip_sync = 0.0
+
     print(
         "User bot: polling enabled",
         flush=True,
@@ -1881,6 +1965,21 @@ def polling_loop():
 
     while True:
         try:
+            current_monotonic = (
+                time.monotonic()
+            )
+
+            if (
+                current_monotonic
+                - last_vip_sync
+                >= VIP_SYNC_INTERVAL_SECONDS
+            ):
+                run_vip_access_sync()
+
+                last_vip_sync = (
+                    current_monotonic
+                )
+
             result = fetch_updates(
                 offset
             )
@@ -1917,8 +2016,7 @@ def polling_loop():
                 except Exception as error:
                     print(
                         "USER BOT UPDATE ERROR | "
-                        f"{type(error).__name__}: "
-                        f"{error}",
+                        f"{type(error).__name__}",
                         flush=True,
                     )
 
