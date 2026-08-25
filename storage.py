@@ -156,12 +156,6 @@ def init_db():
                     """
                 )
 
-        # Keep one record for each
-        # symbol + interval + candle.
-        #
-        # EUR/USD and GBP/USD
-        # therefore never collide.
-
         connection.execute(
             """
             DELETE FROM
@@ -308,7 +302,10 @@ def init_db():
                 exit_price REAL,
                 exit_reason TEXT,
 
-                pnl_pips REAL
+                pnl_pips REAL,
+
+                mae_pips REAL,
+                mfe_pips REAL
             )
             """
         )
@@ -344,6 +341,15 @@ def init_db():
                     "INTEGER NOT NULL "
                     "DEFAULT 0"
                 ),
+
+            # Old trades stay NULL.
+            # We did not historically
+            # track their excursions.
+            "mae_pips":
+                "REAL",
+
+            "mfe_pips":
+                "REAL",
         }
 
         for (
@@ -585,10 +591,6 @@ def create_signal_event_if_new(
                 existing["id"],
                 "ALREADY_EXISTS",
             )
-
-        # Important:
-        # continuation is checked
-        # only inside the SAME symbol.
 
         last_event = connection.execute(
             """
@@ -1127,7 +1129,10 @@ def save_virtual_trade(
 
                 model_version,
                 spread_pips,
-                max_hold_minutes
+                max_hold_minutes,
+
+                mae_pips,
+                mfe_pips
             )
 
             VALUES (
@@ -1138,7 +1143,8 @@ def save_virtual_trade(
                 ?, ?,
                 ?, ?,
                 'OPEN',
-                ?, ?, ?
+                ?, ?, ?,
+                0.0, 0.0
             )
             """,
             (
@@ -1219,6 +1225,55 @@ def get_open_virtual_trades(
             dict(row)
             for row in rows
         ]
+
+
+def update_trade_excursions(
+    trade_id,
+    mae_pips,
+    mfe_pips,
+):
+    with get_connection() as connection:
+
+        cursor = connection.execute(
+            """
+            UPDATE virtual_trades
+
+            SET
+                mae_pips =
+                    CASE
+                        WHEN mae_pips IS NULL
+                        OR ? > mae_pips
+                        THEN ?
+                        ELSE mae_pips
+                    END,
+
+                mfe_pips =
+                    CASE
+                        WHEN mfe_pips IS NULL
+                        OR ? > mfe_pips
+                        THEN ?
+                        ELSE mfe_pips
+                    END
+
+            WHERE id = ?
+            AND status = 'OPEN'
+            """,
+            (
+                mae_pips,
+                mae_pips,
+
+                mfe_pips,
+                mfe_pips,
+
+                trade_id,
+            ),
+        )
+
+        connection.commit()
+
+        return (
+            cursor.rowcount > 0
+        )
 
 
 def close_virtual_trade(
