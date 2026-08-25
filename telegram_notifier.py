@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 
 import requests
 
@@ -19,6 +19,33 @@ API_URL = (
     if BOT_TOKEN
     else None
 )
+
+TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def interval_minutes(interval):
+    if interval.endswith("min"):
+        return int(
+            interval.replace(
+                "min",
+                "",
+            )
+        )
+
+    if interval.endswith("h"):
+        return (
+            int(
+                interval.replace(
+                    "h",
+                    "",
+                )
+            )
+            * 60
+        )
+
+    raise ValueError(
+        f"Unsupported interval: {interval}"
+    )
 
 
 def send_message(
@@ -81,13 +108,41 @@ def get_direction_icon(signal):
     return "📊"
 
 
-def send_trade_opened(trade):
-    now = datetime.now(
-        timezone.utc
-    ).strftime(
+def get_signal_time(trade):
+    candle_time = datetime.strptime(
+        trade["entry_candle_time"],
+        TIME_FORMAT,
+    )
+
+    minutes = interval_minutes(
+        trade["interval"]
+    )
+
+    signal_time = (
+        candle_time
+        + timedelta(
+            minutes=minutes
+        )
+    )
+
+    return signal_time.strftime(
         "%Y-%m-%d %H:%M UTC"
     )
 
+
+def format_max_trade_time(minutes):
+    if minutes % 60 == 0:
+        hours = minutes // 60
+
+        if hours == 1:
+            return "1 hour"
+
+        return f"{hours} hours"
+
+    return f"{minutes} min"
+
+
+def send_trade_opened(trade):
     direction_icon = get_direction_icon(
         trade["signal"]
     )
@@ -109,24 +164,37 @@ def send_trade_opened(trade):
         / trade["risk_pips"]
     )
 
+    signal_time = get_signal_time(
+        trade
+    )
+
+    max_trade_time = format_max_trade_time(
+        trade["max_hold_minutes"]
+    )
+
     text = (
         f"{direction_icon} "
         f"<b>{SYMBOL} · {trade['signal']}</b>\n"
         "\n"
         "✅ <b>SIGNAL ACTIVE</b>\n"
         "\n"
-        f"🎯 Entry        <code>{entry}</code>\n"
-        f"🛑 Stop Loss    <code>{stop_loss}</code>\n"
-        f"🏁 Take Profit  <code>{take_profit}</code>\n"
+        f"🎯 Entry: <code>{entry}</code>\n"
+        f"🛑 Stop Loss: <code>{stop_loss}</code>\n"
+        f"🏁 Take Profit: <code>{take_profit}</code>\n"
         "\n"
         f"⚖️ Risk: "
         f"<b>{trade['risk_pips']:.1f} pips</b>\n"
+        f"💰 Reward: "
+        f"<b>{trade['reward_pips']:.1f} pips</b>\n"
         f"📐 R:R: "
         f"<b>1:{rr:.2f}</b>\n"
         f"⏱ Timeframe: "
         f"<b>{INTERVAL}</b>\n"
+        f"⌛ Max trade time: "
+        f"<b>{max_trade_time}</b>\n"
         "\n"
-        f"🕒 {now}\n"
+        f"🕒 Signal time: "
+        f"<b>{signal_time}</b>\n"
         "\n"
         "<i>Test signal · simulated execution</i>"
     )
@@ -163,16 +231,14 @@ def send_trade_opened(trade):
 
 
 def send_trade_closed(trade):
-    now = datetime.now(
-        timezone.utc
-    ).strftime(
-        "%Y-%m-%d %H:%M UTC"
-    )
-
     result = trade["result"]
 
     direction_icon = get_direction_icon(
         trade["signal"]
+    )
+
+    result_candle = (
+        f"{trade['candle_time']} UTC"
     )
 
     if result == "TAKE_PROFIT":
@@ -204,7 +270,8 @@ def send_trade_closed(trade):
             "The exact order cannot be determined "
             "from OHLC data.\n"
             "\n"
-            f"🕒 {now}\n"
+            f"🕒 Result candle: "
+            f"<b>{result_candle}</b>\n"
             "\n"
             "<i>Test signal · simulated execution</i>"
         )
@@ -215,8 +282,10 @@ def send_trade_closed(trade):
 
         if net_pips > 0:
             pnl_icon = "🟢"
+
         elif net_pips < 0:
             pnl_icon = "🔴"
+
         else:
             pnl_icon = "⚪"
 
@@ -231,7 +300,8 @@ def send_trade_closed(trade):
             f"📊 Result: "
             f"<b>{r_value:+.2f}R</b>\n"
             "\n"
-            f"🕒 {now}\n"
+            f"🕒 Result candle: "
+            f"<b>{result_candle}</b>\n"
             "\n"
             "<i>Test signal · simulated execution</i>"
         )
