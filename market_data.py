@@ -1,3 +1,4 @@
+import time
 import requests
 
 from datetime import (
@@ -20,6 +21,15 @@ API_URL = (
 )
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+# First request + 2 retries.
+MAX_FETCH_ATTEMPTS = 3
+
+# Wait between retries when
+# Twelve Data is exactly one
+# closed candle behind.
+RETRY_DELAY_SECONDS = 10
 
 
 def interval_to_timedelta(
@@ -55,30 +65,56 @@ def interval_to_timedelta(
     )
 
 
+def interval_to_seconds(
+    interval
+):
+    return int(
+        interval_to_timedelta(
+            interval
+        ).total_seconds()
+    )
+
+
 INTERVAL_DELTA = (
     interval_to_timedelta(
         INTERVAL
     )
 )
 
+INTERVAL_SECONDS = (
+    interval_to_seconds(
+        INTERVAL
+    )
+)
 
-def fetch_candles(
-    symbol=None
+
+def get_expected_latest_candle_open(
+    now
 ):
-    if not TWELVE_DATA_API_KEY:
-        raise RuntimeError(
-            "TWELVE_DATA_API_KEY "
-            "is not set"
-        )
+    timestamp = int(
+        now.timestamp()
+    )
 
-    # Пока сохраняем совместимость
-    # со старым кодом.
-    #
-    # Если символ не передан,
-    # будет использован EUR/USD.
-    if symbol is None:
-        symbol = SYMBOL
+    current_boundary = (
+        timestamp
+        // INTERVAL_SECONDS
+        * INTERVAL_SECONDS
+    )
 
+    expected_open_timestamp = (
+        current_boundary
+        - INTERVAL_SECONDS
+    )
+
+    return datetime.fromtimestamp(
+        expected_open_timestamp,
+        tz=timezone.utc,
+    )
+
+
+def request_candles(
+    symbol
+):
     params = {
         "symbol": symbol,
         "interval": INTERVAL,
@@ -120,10 +156,13 @@ def fetch_candles(
             f"received for {symbol}"
         )
 
-    now = datetime.now(
-        timezone.utc
-    )
+    return values
 
+
+def prepare_closed_candles(
+    values,
+    now,
+):
     candles = []
 
     for candle in values:
@@ -141,9 +180,8 @@ def fetch_candles(
             + INTERVAL_DELTA
         )
 
-        # Используем только
-        # действительно закрытые
-        # свечи.
+        # Never use a candle that
+        # has not fully closed yet.
         if candle_close > now:
             continue
 
@@ -175,16 +213,168 @@ def fetch_candles(
         )
 
     if not candles:
-        raise RuntimeError(
-            "No closed candles "
-            f"available for {symbol}"
-        )
+        return []
 
-    # Twelve Data отдаёт
-    # сначала самые новые свечи.
+    # Twelve Data returns newest
+    # candles first.
     #
-    # Индикаторам нужен порядок:
-    # старые -> новые.
+    # Indicators require:
+    # old -> new.
     candles.reverse()
 
     return candles
+
+
+def fetch_candles(
+    symbol=None
+):
+    if not TWELVE_DATA_API_KEY:
+        raise RuntimeError(
+            "TWELVE_DATA_API_KEY "
+            "is not set"
+        )
+
+    if symbol is None:
+        symbol = SYMBOL
+
+    for attempt in range(
+        1,
+        MAX_FETCH_ATTEMPTS + 1,
+    ):
+        now = datetime.now(
+            timezone.utc
+        )
+
+        expected_latest = (
+            get_expected_latest_candle_open(
+                now
+            )
+        )
+
+        values = request_candles(
+            symbol
+        )
+
+        candles = (
+            prepare_closed_candles(
+                values,
+                now,
+            )
+        )
+
+        if not candles:
+            raise RuntimeError(
+                "No closed candles "
+                f"available for {symbol}"
+            )
+
+        latest_candle = (
+            datetime.strptime(
+                candles[-1][
+                    "datetime"
+                ],
+                TIME_FORMAT,
+            ).replace(
+                tzinfo=timezone.utc
+            )
+        )
+
+        # Perfect:
+        # Twelve Data already has
+        # the candle we expect.
+        if (
+            latest_candle
+            == expected_latest
+        ):
+            if attempt > 1:
+                print(
+                    "DATA READY | "
+                    f"{symbol} | "
+                    f"Candle="
+                    f"{latest_candle.strftime(TIME_FORMAT)} | "
+                    f"Attempt={attempt}",
+                    flush=True,
+                )
+
+            return candles
+
+        lag = (
+            expected_latest
+            - latest_candle
+        )
+
+        # API is exactly one candle
+        # behind. This is the case
+        # where a short retry is useful.
+        if (
+            lag == INTERVAL_DELTA
+            and attempt
+            < MAX_FETCH_ATTEMPTS
+        ):
+            print(
+                "DATA WAIT | "
+                f"{symbol} | "
+                "Expected="
+                f"{expected_latest.strftime(TIME_FORMAT)} | "
+                "Received="
+                f"{latest_candle.strftime(TIME_FORMAT)} | "
+                f"Retry in "
+                f"{RETRY_DELAY_SECONDS}s | "
+                f"Attempt="
+                f"{attempt}/"
+                f"{MAX_FETCH_ATTEMPTS}",
+                flush=True,
+            )
+
+            time.sleep(
+                RETRY_DELAY_SECONDS
+            )
+
+            continue
+
+        # If the market is closed or
+        # there is a larger historical
+        # gap, repeated requests are
+        # unlikely to help.
+        if lag > INTERVAL_DELTA:
+            print(
+                "DATA GAP | "
+                f"{symbol} | "
+                "Expected="
+                f"{expected_latest.strftime(TIME_FORMAT)} | "
+                "Latest="
+                f"{latest_candle.strftime(TIME_FORMAT)} | "
+                "No retry",
+                flush=True,
+            )
+
+            return candles
+
+        # If all short retries were
+        # exhausted, return the latest
+        # valid closed candles.
+        if (
+            attempt
+            >= MAX_FETCH_ATTEMPTS
+        ):
+            print(
+                "DATA DELAY | "
+                f"{symbol} | "
+                "Expected="
+                f"{expected_latest.strftime(TIME_FORMAT)} | "
+                "Latest="
+                f"{latest_candle.strftime(TIME_FORMAT)} | "
+                "Retries exhausted",
+                flush=True,
+            )
+
+            return candles
+
+        # Defensive fallback for any
+        # unusual timestamp situation.
+        return candles
+
+    raise RuntimeError(
+        "Unable to fetch candles "
+        f"for {symbol}"
+    )
