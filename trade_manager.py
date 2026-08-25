@@ -15,6 +15,7 @@ from storage import (
     get_signal_events_without_trades,
     save_virtual_trade,
     get_open_virtual_trades,
+    update_trade_excursions,
     close_virtual_trade,
     interval_minutes,
 )
@@ -264,6 +265,61 @@ def calculate_directional_pips(
     )
 
 
+def calculate_candle_excursions(
+    signal,
+    entry_price,
+    high,
+    low,
+    pip_size,
+):
+    if signal == "BUY":
+        adverse_pips = max(
+            (
+                entry_price
+                - low
+            )
+            / pip_size,
+            0.0,
+        )
+
+        favorable_pips = max(
+            (
+                high
+                - entry_price
+            )
+            / pip_size,
+            0.0,
+        )
+
+    elif signal == "SELL":
+        adverse_pips = max(
+            (
+                high
+                - entry_price
+            )
+            / pip_size,
+            0.0,
+        )
+
+        favorable_pips = max(
+            (
+                entry_price
+                - low
+            )
+            / pip_size,
+            0.0,
+        )
+
+    else:
+        adverse_pips = 0.0
+        favorable_pips = 0.0
+
+    return (
+        adverse_pips,
+        favorable_pips,
+    )
+
+
 def evaluate_open_trades(
     candles,
     symbol,
@@ -364,6 +420,30 @@ def evaluate_open_trades(
             "signal"
         ]
 
+        current_mae = (
+            float(
+                trade[
+                    "mae_pips"
+                ]
+            )
+            if trade[
+                "mae_pips"
+            ] is not None
+            else 0.0
+        )
+
+        current_mfe = (
+            float(
+                trade[
+                    "mfe_pips"
+                ]
+            )
+            if trade[
+                "mfe_pips"
+            ] is not None
+            else 0.0
+        )
+
         for candle in candles:
             candle_open = (
                 datetime.strptime(
@@ -432,6 +512,18 @@ def evaluate_open_trades(
             else:
                 continue
 
+            # =========================
+            # AMBIGUOUS CANDLE
+            # =========================
+            #
+            # Both SL and TP were
+            # touched inside one candle.
+            # OHLC cannot tell us
+            # which happened first.
+            #
+            # We therefore do NOT use
+            # this candle for MAE/MFE.
+
             if (
                 stop_hit
                 and target_hit
@@ -495,12 +587,47 @@ def evaluate_open_trades(
 
                             "r":
                                 None,
+
+                            "mae_pips":
+                                current_mae,
+
+                            "mfe_pips":
+                                current_mfe,
                         }
                     )
 
                 break
 
+            # =========================
+            # TAKE PROFIT
+            # =========================
+            #
+            # We know price reached TP.
+            # We do NOT use the entire
+            # candle high/low because
+            # some movement may have
+            # happened after exit.
+
             if target_hit:
+                current_mfe = max(
+                    current_mfe,
+                    reward_pips,
+                )
+
+                update_trade_excursions(
+                    trade_id=(
+                        trade["id"]
+                    ),
+
+                    mae_pips=(
+                        current_mae
+                    ),
+
+                    mfe_pips=(
+                        current_mfe
+                    ),
+                )
+
                 gross_pips = (
                     reward_pips
                 )
@@ -581,12 +708,41 @@ def evaluate_open_trades(
 
                             "r":
                                 r_multiple,
+
+                            "mae_pips":
+                                current_mae,
+
+                            "mfe_pips":
+                                current_mfe,
                         }
                     )
 
                 break
 
+            # =========================
+            # STOP LOSS
+            # =========================
+
             if stop_hit:
+                current_mae = max(
+                    current_mae,
+                    risk_pips,
+                )
+
+                update_trade_excursions(
+                    trade_id=(
+                        trade["id"]
+                    ),
+
+                    mae_pips=(
+                        current_mae
+                    ),
+
+                    mfe_pips=(
+                        current_mfe
+                    ),
+                )
+
                 gross_pips = (
                     -risk_pips
                 )
@@ -667,10 +823,76 @@ def evaluate_open_trades(
 
                             "r":
                                 r_multiple,
+
+                            "mae_pips":
+                                current_mae,
+
+                            "mfe_pips":
+                                current_mfe,
                         }
                     )
 
                 break
+
+            # =========================
+            # NORMAL OPEN CANDLE
+            # =========================
+            #
+            # No exit occurred, so the
+            # entire candle belongs to
+            # the lifetime of the trade.
+
+            (
+                candle_mae,
+                candle_mfe,
+            ) = (
+                calculate_candle_excursions(
+                    signal=signal,
+
+                    entry_price=(
+                        entry_price
+                    ),
+
+                    high=high,
+                    low=low,
+
+                    pip_size=(
+                        pip_size
+                    ),
+                )
+            )
+
+            current_mae = max(
+                current_mae,
+                candle_mae,
+            )
+
+            current_mfe = max(
+                current_mfe,
+                candle_mfe,
+            )
+
+            update_trade_excursions(
+                trade_id=(
+                    trade["id"]
+                ),
+
+                mae_pips=(
+                    current_mae
+                ),
+
+                mfe_pips=(
+                    current_mfe
+                ),
+            )
+
+            # =========================
+            # TIME EXIT
+            # =========================
+            #
+            # Timeout occurs at candle
+            # close, so using the full
+            # candle for MAE/MFE is valid.
 
             if (
                 candle_close_time
@@ -770,6 +992,12 @@ def evaluate_open_trades(
 
                             "r":
                                 r_multiple,
+
+                            "mae_pips":
+                                current_mae,
+
+                            "mfe_pips":
+                                current_mfe,
                         }
                     )
 
