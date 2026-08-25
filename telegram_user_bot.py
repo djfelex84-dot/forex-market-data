@@ -21,6 +21,11 @@ DB_PATH = os.getenv(
     "/app/data/trading.db",
 )
 
+FREE_CHANNEL_USERNAME = os.getenv(
+    "TELEGRAM_FREE_CHANNEL_ID",
+    "@ASForexCrypto",
+)
+
 API_BASE_URL = (
     f"https://api.telegram.org/"
     f"bot{BOT_TOKEN}"
@@ -31,6 +36,13 @@ POLL_TIMEOUT_SECONDS = 25
 RETRY_SECONDS = 5
 
 STATE_KEY = "last_update_id"
+
+
+BUTTON_STATUS = "📊 My Status"
+BUTTON_VIP = "⭐ VIP"
+BUTTON_FREE = "📢 Free Channel"
+BUTTON_ABOUT = "ℹ️ About"
+BUTTON_HELP = "❓ Help"
 
 
 _polling_started = False
@@ -180,25 +192,78 @@ def telegram_request(
         return None
 
 
+def main_keyboard():
+    return {
+        "keyboard": [
+            [
+                {
+                    "text":
+                        BUTTON_STATUS
+                },
+                {
+                    "text":
+                        BUTTON_VIP
+                },
+            ],
+            [
+                {
+                    "text":
+                        BUTTON_FREE
+                },
+                {
+                    "text":
+                        BUTTON_ABOUT
+                },
+            ],
+            [
+                {
+                    "text":
+                        BUTTON_HELP
+                },
+            ],
+        ],
+
+        "resize_keyboard":
+            True,
+
+        "one_time_keyboard":
+            False,
+
+        "is_persistent":
+            True,
+
+        "input_field_placeholder":
+            "Choose an option",
+    }
+
+
 def send_private_message(
     chat_id,
     text,
+    show_keyboard=True,
 ):
+    payload = {
+        "chat_id":
+            chat_id,
+
+        "text":
+            text,
+
+        "parse_mode":
+            "HTML",
+
+        "disable_web_page_preview":
+            True,
+    }
+
+    if show_keyboard:
+        payload[
+            "reply_markup"
+        ] = main_keyboard()
+
     result = telegram_request(
         "sendMessage",
-        {
-            "chat_id":
-                chat_id,
-
-            "text":
-                text,
-
-            "parse_mode":
-                "HTML",
-
-            "disable_web_page_preview":
-                True,
-        },
+        payload,
     )
 
     return (
@@ -206,16 +271,76 @@ def send_private_message(
     )
 
 
-def format_username(
-    username
-):
-    if not username:
-        return "-"
+def set_bot_commands():
+    commands = [
+        {
+            "command":
+                "start",
 
-    return (
-        "@"
-        + username
+            "description":
+                "Open AS bot",
+        },
+        {
+            "command":
+                "status",
+
+            "description":
+                "My subscription",
+        },
+        {
+            "command":
+                "vip",
+
+            "description":
+                "VIP information",
+        },
+        {
+            "command":
+                "channel",
+
+            "description":
+                "Open Free channel",
+        },
+        {
+            "command":
+                "about",
+
+            "description":
+                "About AS",
+        },
+        {
+            "command":
+                "help",
+
+            "description":
+                "Help",
+        },
+    ]
+
+    result = telegram_request(
+        "setMyCommands",
+        {
+            "commands":
+                commands,
+        },
     )
+
+    if result is None:
+        print(
+            "User bot: "
+            "command menu setup failed",
+            flush=True,
+        )
+
+        return False
+
+    print(
+        "User bot: "
+        "command menu configured",
+        flush=True,
+    )
+
+    return True
 
 
 def start_text(
@@ -245,10 +370,8 @@ def start_text(
         "Your current plan: "
         "<b>FREE</b>\n"
         "\n"
-        "Available commands:\n"
-        "/status — subscription status\n"
-        "/vip — VIP information\n"
-        "/help — help\n"
+        "Use the buttons below "
+        "to explore the service.\n"
         "\n"
         "⚠️ The project is currently "
         "in the testing and research stage.\n"
@@ -271,7 +394,7 @@ def status_text(
         return (
             "Your account is not "
             "registered yet.\n\n"
-            "Use /start first."
+            "Press START first."
         )
 
     if (
@@ -288,7 +411,7 @@ def status_text(
         )
 
         return (
-            "👤 <b>Subscription status</b>\n"
+            "👤 <b>My Status</b>\n"
             "\n"
             "Plan: <b>VIP</b>\n"
             "Status: <b>ACTIVE</b>\n"
@@ -297,7 +420,7 @@ def status_text(
         )
 
     return (
-        "👤 <b>Subscription status</b>\n"
+        "👤 <b>My Status</b>\n"
         "\n"
         "Plan: <b>FREE</b>\n"
         "Status: <b>ACTIVE</b>\n"
@@ -309,36 +432,136 @@ def vip_text():
     return (
         "⭐ <b>AS VIP</b>\n"
         "\n"
-        "VIP is being prepared while "
-        "the trading strategies are "
-        "still under research and testing.\n"
+        "VIP will provide access to "
+        "selected trading signals "
+        "with Entry, Stop Loss, "
+        "Take Profit and transparent "
+        "results.\n"
         "\n"
-        "VIP access is currently "
-        "<b>not available for purchase</b>.\n"
+        "The strategy is currently "
+        "being researched and tested.\n"
+        "\n"
+        "VIP access is therefore "
+        "<b>not available for purchase yet</b>.\n"
         "\n"
         "When the service is ready, "
-        "subscription and access options "
-        "will appear here."
+        "subscription options will "
+        "appear directly in this bot."
+    )
+
+
+def free_channel_text():
+    username = (
+        FREE_CHANNEL_USERNAME
+        or "@ASForexCrypto"
+    )
+
+    if username.startswith(
+        "@"
+    ):
+        clean_username = (
+            username[
+                1:
+            ]
+        )
+
+        channel_url = (
+            "https://t.me/"
+            f"{clean_username}"
+        )
+
+        display_name = (
+            username
+        )
+
+    elif username.startswith(
+        "https://"
+    ):
+        channel_url = (
+            username
+        )
+
+        display_name = (
+            "AS | Forex & Crypto"
+        )
+
+    else:
+        channel_url = (
+            "https://t.me/"
+            "ASForexCrypto"
+        )
+
+        display_name = (
+            "@ASForexCrypto"
+        )
+
+    return (
+        "📢 <b>AS Free Channel</b>\n"
+        "\n"
+        "Market analysis, news, "
+        "research updates and "
+        "transparent statistics.\n"
+        "\n"
+        f"👉 <a href=\"{channel_url}\">"
+        f"Open {display_name}</a>"
+    )
+
+
+def about_text():
+    return (
+        "ℹ️ <b>About AS</b>\n"
+        "\n"
+        "<b>AS | Forex & Crypto</b> "
+        "is being developed as a "
+        "data-driven market analysis "
+        "and trading signal service.\n"
+        "\n"
+        "Our focus:\n"
+        "• clear Entry / SL / TP\n"
+        "• transparent results\n"
+        "• losses are not hidden\n"
+        "• no guaranteed profits\n"
+        "• strategy testing before launch\n"
+        "\n"
+        "All market times are shown "
+        "in <b>UTC</b>."
     )
 
 
 def help_text():
     return (
-        "ℹ️ <b>AS Bot Help</b>\n"
+        "❓ <b>Help</b>\n"
         "\n"
-        "/start — register / open menu\n"
-        "/status — subscription status\n"
-        "/vip — VIP information\n"
-        "/help — this message"
+        "You can use the buttons "
+        "at the bottom of the chat.\n"
+        "\n"
+        "📊 <b>My Status</b> — "
+        "your current subscription\n"
+        "\n"
+        "⭐ <b>VIP</b> — "
+        "VIP information\n"
+        "\n"
+        "📢 <b>Free Channel</b> — "
+        "open the public channel\n"
+        "\n"
+        "ℹ️ <b>About</b> — "
+        "information about AS\n"
+        "\n"
+        "You can also use:\n"
+        "/start\n"
+        "/status\n"
+        "/vip\n"
+        "/channel\n"
+        "/about\n"
+        "/help"
     )
 
 
 def unknown_text():
     return (
-        "I don't recognize that command.\n"
+        "I don't recognize that option.\n"
         "\n"
-        "Use /help to see "
-        "available commands."
+        "Please use the buttons below."
     )
 
 
@@ -410,6 +633,15 @@ def normalize_command(
     return first_part
 
 
+def normalize_button_text(
+    text
+):
+    if not text:
+        return ""
+
+    return text.strip()
+
+
 def process_private_message(
     message
 ):
@@ -475,6 +707,12 @@ def process_private_message(
         )
     )
 
+    button_text = (
+        normalize_button_text(
+            text
+        )
+    )
+
     if command == "/start":
         send_private_message(
             chat_id,
@@ -485,18 +723,36 @@ def process_private_message(
             ),
         )
 
+        access = (
+            get_effective_access(
+                telegram_user_id
+            )
+        )
+
+        plan = (
+            access.get(
+                "plan"
+            )
+            if access
+            else "FREE"
+        )
+
         print(
             "USER BOT | "
             "/start | "
             f"UserDB="
             f"{user['id']} | "
-            "Plan=FREE",
+            f"Plan="
+            f"{plan}",
             flush=True,
         )
 
         return
 
-    if command == "/status":
+    if (
+        command == "/status"
+        or button_text == BUTTON_STATUS
+    ):
         send_private_message(
             chat_id,
             status_text(
@@ -506,7 +762,7 @@ def process_private_message(
 
         print(
             "USER BOT | "
-            "/status | "
+            "STATUS | "
             f"UserDB="
             f"{user['id']}",
             flush=True,
@@ -514,7 +770,10 @@ def process_private_message(
 
         return
 
-    if command == "/vip":
+    if (
+        command == "/vip"
+        or button_text == BUTTON_VIP
+    ):
         send_private_message(
             chat_id,
             vip_text(),
@@ -522,7 +781,7 @@ def process_private_message(
 
         print(
             "USER BOT | "
-            "/vip | "
+            "VIP | "
             f"UserDB="
             f"{user['id']}",
             flush=True,
@@ -530,7 +789,40 @@ def process_private_message(
 
         return
 
-    if command == "/help":
+    if (
+        command == "/channel"
+        or button_text == BUTTON_FREE
+    ):
+        send_private_message(
+            chat_id,
+            free_channel_text(),
+        )
+
+        print(
+            "USER BOT | "
+            "FREE CHANNEL | "
+            f"UserDB="
+            f"{user['id']}",
+            flush=True,
+        )
+
+        return
+
+    if (
+        command == "/about"
+        or button_text == BUTTON_ABOUT
+    ):
+        send_private_message(
+            chat_id,
+            about_text(),
+        )
+
+        return
+
+    if (
+        command == "/help"
+        or button_text == BUTTON_HELP
+    ):
         send_private_message(
             chat_id,
             help_text(),
@@ -591,6 +883,8 @@ def fetch_updates(
 
 def polling_loop():
     init_user_bot_state_table()
+
+    set_bot_commands()
 
     last_update_id = (
         get_last_update_id()
