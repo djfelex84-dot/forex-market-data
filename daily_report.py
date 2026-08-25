@@ -107,7 +107,7 @@ def init_daily_report_table():
         connection.commit()
 
 
-def report_already_sent(
+def report_already_processed(
     report_date
 ):
     with get_connection() as connection:
@@ -129,10 +129,10 @@ def report_already_sent(
     return row is not None
 
 
-def mark_report_sent(
+def mark_report_processed(
     report_date
 ):
-    sent_at = datetime.now(
+    processed_at = datetime.now(
         timezone.utc
     ).strftime(
         TIME_FORMAT
@@ -151,7 +151,7 @@ def mark_report_sent(
             """,
             (
                 report_date,
-                sent_at,
+                processed_at,
             ),
         )
 
@@ -170,7 +170,6 @@ def empty_symbol_stats():
         "r_count": 0,
         "avg_r": 0.0,
         "signals": 0,
-        "open_trades": 0,
     }
 
 
@@ -196,6 +195,11 @@ def get_daily_statistics(
         "%Y-%m-%d",
     ).date()
 
+    # We read a slightly wider raw
+    # candle-time window because
+    # candle_time stores candle OPEN
+    # time, while reports use the
+    # actual candle CLOSE time.
     window_start = (
         datetime.combine(
             report_day,
@@ -266,23 +270,9 @@ def get_daily_statistics(
             ),
         ).fetchall()
 
-        open_trades = connection.execute(
-            """
-            SELECT
-                symbol,
-                COUNT(*) AS total
-
-            FROM virtual_trades
-
-            WHERE model_version = ?
-              AND status = 'OPEN'
-
-            GROUP BY symbol
-            """,
-            (
-                TRADE_MODEL_VERSION,
-            ),
-        ).fetchall()
+    # =========================
+    # CLOSED TRADES
+    # =========================
 
     for trade in trades:
         closed_at = effective_time(
@@ -356,6 +346,10 @@ def get_daily_statistics(
 
             stats["r_count"] += 1
 
+    # =========================
+    # SIGNALS
+    # =========================
+
     for signal in signals:
         signal_at = effective_time(
             signal["candle_time"],
@@ -372,16 +366,9 @@ def get_daily_statistics(
 
         stats["signals"] += 1
 
-    for row in open_trades:
-        stats = ensure_symbol(
-            stats_by_symbol,
-            row["symbol"],
-        )
-
-        stats["open_trades"] = (
-            row["total"]
-            or 0
-        )
+    # =========================
+    # AVERAGES
+    # =========================
 
     for stats in (
         stats_by_symbol.values()
@@ -391,6 +378,10 @@ def get_daily_statistics(
                 stats["total_r"]
                 / stats["r_count"]
             )
+
+    # =========================
+    # ALL MARKETS TOTAL
+    # =========================
 
     total = empty_symbol_stats()
 
@@ -433,12 +424,6 @@ def get_daily_statistics(
             stats["signals"]
         )
 
-        total[
-            "open_trades"
-        ] += stats[
-            "open_trades"
-        ]
-
     if total["r_count"] > 0:
         total["avg_r"] = (
             total["total_r"]
@@ -449,6 +434,17 @@ def get_daily_statistics(
         "total": total,
         "symbols": stats_by_symbol,
     }
+
+
+def has_daily_activity(
+    stats
+):
+    total = stats["total"]
+
+    return (
+        total["trades"] > 0
+        or total["signals"] > 0
+    )
 
 
 def format_report_date(
@@ -520,10 +516,6 @@ def build_daily_report(
                 "🔎 Signals detected: "
                 f"<b>{total['signals']}</b>"
             ),
-            (
-                "🔓 Open trades now: "
-                f"<b>{total['open_trades']}</b>"
-            ),
         ]
     )
 
@@ -534,6 +526,14 @@ def build_daily_report(
             symbol,
             empty_symbol_stats(),
         )
+
+        # Do not fill the report with
+        # an inactive market section.
+        if (
+            symbol_stats["trades"] == 0
+            and symbol_stats["signals"] == 0
+        ):
+            continue
 
         lines.extend(
             [
@@ -549,9 +549,31 @@ def build_daily_report(
                     "SL: "
                     f"<b>{symbol_stats['stop_losses']}</b>"
                 ),
+            ]
+        )
+
+        if (
+            symbol_stats["timeouts"] > 0
+        ):
+            lines.append(
+                "Time Exit: "
+                f"<b>{symbol_stats['timeouts']}</b>"
+            )
+
+        if (
+            symbol_stats["ambiguous"] > 0
+        ):
+            lines.append(
+                "Ambiguous: "
+                f"<b>{symbol_stats['ambiguous']}</b>"
+            )
+
+        lines.extend(
+            [
                 (
                     "Net: "
-                    f"<b>{symbol_stats['net_pips']:+.2f} pips</b>"
+                    f"<b>{symbol_stats['net_pips']:+.2f} "
+                    "pips</b>"
                     " · "
                     "R: "
                     f"<b>{symbol_stats['total_r']:+.2f}R</b>"
@@ -559,9 +581,6 @@ def build_daily_report(
                 (
                     "Signals: "
                     f"<b>{symbol_stats['signals']}</b>"
-                    " · "
-                    "Open now: "
-                    f"<b>{symbol_stats['open_trades']}</b>"
                 ),
             ]
         )
@@ -668,8 +687,6 @@ def send_daily_report_if_due():
     ):
         return False
 
-    # Report the complete
-    # previous UTC day.
     report_date = (
         now.date()
         - timedelta(days=1)
@@ -677,7 +694,7 @@ def send_daily_report_if_due():
         "%Y-%m-%d"
     )
 
-    if report_already_sent(
+    if report_already_processed(
         report_date
     ):
         return False
@@ -685,6 +702,25 @@ def send_daily_report_if_due():
     stats = get_daily_statistics(
         report_date
     )
+
+    # No signals and no completed
+    # trades = nothing useful to
+    # publish in the public channel.
+    if not has_daily_activity(
+        stats
+    ):
+        mark_report_processed(
+            report_date
+        )
+
+        print(
+            "DAILY REPORT SKIPPED | "
+            f"Date={report_date} | "
+            "No activity",
+            flush=True,
+        )
+
+        return False
 
     text = build_daily_report(
         report_date,
@@ -698,7 +734,7 @@ def send_daily_report_if_due():
     )
 
     if sent:
-        mark_report_sent(
+        mark_report_processed(
             report_date
         )
 
@@ -707,6 +743,8 @@ def send_daily_report_if_due():
             f"Date={report_date} | "
             f"Trades="
             f"{stats['total']['trades']} | "
+            f"Signals="
+            f"{stats['total']['signals']} | "
             f"TotalR="
             f"{stats['total']['total_r']:+.2f}R",
             flush=True,
