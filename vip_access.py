@@ -1,6 +1,5 @@
 import os
 import sqlite3
-import time
 
 from datetime import (
     datetime,
@@ -12,6 +11,7 @@ import requests
 
 from user_subscriptions import (
     get_effective_access,
+    expire_due_subscriptions,
 )
 
 
@@ -46,6 +46,10 @@ STATUS_EXPIRED = "EXPIRED"
 STATUS_DECLINED = "DECLINED"
 
 
+# ============================================================
+# TIME
+# ============================================================
+
 def utc_now():
     return datetime.now(
         timezone.utc
@@ -69,6 +73,10 @@ def utc_text(
         TIME_FORMAT
     )
 
+
+# ============================================================
+# DATABASE
+# ============================================================
 
 def get_connection():
     connection = sqlite3.connect(
@@ -149,6 +157,10 @@ def init_vip_access_table():
         connection.commit()
 
 
+# ============================================================
+# TELEGRAM API
+# ============================================================
+
 def telegram_request(
     method,
     payload=None,
@@ -222,9 +234,30 @@ def telegram_request(
     )
 
 
+# ============================================================
+# SUBSCRIPTION CHECK
+# ============================================================
+
+def refresh_expired_subscriptions():
+    try:
+        return expire_due_subscriptions()
+
+    except Exception as error:
+        print(
+            "VIP ACCESS ERROR | "
+            "Subscription expiry check | "
+            f"{type(error).__name__}",
+            flush=True,
+        )
+
+        return None
+
+
 def has_active_vip(
     telegram_user_id
 ):
+    refresh_expired_subscriptions()
+
     access = get_effective_access(
         telegram_user_id
     )
@@ -241,6 +274,10 @@ def has_active_vip(
         ) == "ACTIVE"
     )
 
+
+# ============================================================
+# INVITE EXPIRATION
+# ============================================================
 
 def expire_old_invites(
     telegram_user_id=None
@@ -292,6 +329,10 @@ def expire_old_invites(
 
     return cursor.rowcount
 
+
+# ============================================================
+# INVITE RECORDS
+# ============================================================
 
 def get_pending_invite(
     telegram_user_id
@@ -382,12 +423,18 @@ def save_invite(
     return access_id
 
 
+# ============================================================
+# CREATE VIP INVITE
+# ============================================================
+
 def create_vip_invite(
     telegram_user_id
 ):
     telegram_user_id = int(
         telegram_user_id
     )
+
+    refresh_expired_subscriptions()
 
     access = get_effective_access(
         telegram_user_id
@@ -522,10 +569,9 @@ def create_vip_invite(
 
     print(
         "VIP ACCESS | "
-        f"Invite created | "
+        "Invite created | "
         f"User={telegram_user_id} | "
-        f"Expires="
-        f"{expires_at} UTC",
+        f"Expires={expires_at} UTC",
         flush=True,
     )
 
@@ -543,6 +589,10 @@ def create_vip_invite(
             False,
     }
 
+
+# ============================================================
+# FIND ACCESS BY LINK
+# ============================================================
 
 def get_access_record_by_link(
     invite_link
@@ -581,6 +631,10 @@ def get_access_record_by_link(
         row
     )
 
+
+# ============================================================
+# ACCESS STATUS
+# ============================================================
 
 def mark_joined(
     access_id
@@ -648,6 +702,10 @@ def mark_declined(
         > 0
     )
 
+
+# ============================================================
+# JOIN REQUEST
+# ============================================================
 
 def approve_join_request(
     telegram_user_id
@@ -748,8 +806,6 @@ def process_vip_join_request(
         )
     )
 
-    # The link does not belong to
-    # our active VIP access record.
     if access_record is None:
         decline_join_request(
             telegram_user_id
@@ -764,8 +820,6 @@ def process_vip_join_request(
 
         return False
 
-    # The invite was created for
-    # another Telegram user.
     if int(
         access_record[
             "telegram_user_id"
@@ -786,9 +840,6 @@ def process_vip_join_request(
 
         return False
 
-    # The correct person is using
-    # the correct link, but VIP may
-    # already have expired.
     if not has_active_vip(
         telegram_user_id
     ):
@@ -811,10 +862,8 @@ def process_vip_join_request(
 
         return False
 
-    approved = (
-        approve_join_request(
-            telegram_user_id
-        )
+    approved = approve_join_request(
+        telegram_user_id
     )
 
     if not approved:
@@ -842,6 +891,10 @@ def process_vip_join_request(
     return True
 
 
+# ============================================================
+# REMOVE USER FROM VIP
+# ============================================================
+
 def remove_user_from_vip(
     telegram_user_id
 ):
@@ -849,7 +902,6 @@ def remove_user_from_vip(
         telegram_user_id
     )
 
-    # First remove the user.
     banned = telegram_request(
         "banChatMember",
         {
@@ -862,12 +914,17 @@ def remove_user_from_vip(
     )
 
     if banned is None:
+        print(
+            "VIP ACCESS REVOKE FAILED | "
+            f"User={telegram_user_id}",
+            flush=True,
+        )
+
         return False
 
-    # Immediately unban.
-    # The user remains outside the
-    # channel but can join again after
-    # a future VIP renewal.
+    # Unban immediately.
+    # The user stays outside the channel,
+    # but can join again after renewal.
     telegram_request(
         "unbanChatMember",
         {
@@ -915,3 +972,101 @@ def remove_user_from_vip(
     )
 
     return True
+
+
+# ============================================================
+# ACTIVE VIP MEMBERS
+# ============================================================
+
+def get_joined_vip_users():
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT
+                telegram_user_id
+
+            FROM vip_access
+
+            WHERE
+                status = ?
+            """,
+            (
+                STATUS_JOINED,
+            ),
+        ).fetchall()
+
+    return [
+        int(
+            row[
+                "telegram_user_id"
+            ]
+        )
+        for row in rows
+    ]
+
+
+# ============================================================
+# VIP ACCESS SYNCHRONIZATION
+# ============================================================
+
+def sync_expired_vip_access():
+    """
+    Synchronizes subscriptions with
+    actual VIP channel access.
+
+    1. Expire overdue subscriptions.
+    2. Expire old invitation records.
+    3. Find users recorded as JOINED.
+    4. Remove users who no longer have
+       an ACTIVE VIP subscription.
+    """
+
+    refresh_expired_subscriptions()
+
+    expire_old_invites()
+
+    joined_users = (
+        get_joined_vip_users()
+    )
+
+    checked = 0
+    revoked = 0
+    failed = 0
+
+    for telegram_user_id in joined_users:
+        checked += 1
+
+        if has_active_vip(
+            telegram_user_id
+        ):
+            continue
+
+        success = remove_user_from_vip(
+            telegram_user_id
+        )
+
+        if success:
+            revoked += 1
+
+        else:
+            failed += 1
+
+    if revoked > 0:
+        print(
+            "VIP ACCESS SYNC | "
+            f"Checked={checked} | "
+            f"Revoked={revoked} | "
+            f"Failed={failed}",
+            flush=True,
+        )
+
+    return {
+        "checked":
+            checked,
+
+        "revoked":
+            revoked,
+
+        "failed":
+            failed,
+    }
