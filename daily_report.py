@@ -1,8 +1,18 @@
 import os
 import sqlite3
-from datetime import datetime, timezone
+
+from datetime import (
+    datetime,
+    timedelta,
+    timezone,
+)
 
 import requests
+
+from config import (
+    SYMBOLS,
+    TRADE_MODEL_VERSION,
+)
 
 
 BOT_TOKEN = os.getenv(
@@ -18,10 +28,11 @@ DB_PATH = os.getenv(
     "/app/data/trading.db",
 )
 
-TRADE_MODEL_VERSION = "V2"
 
-REPORT_HOUR_UTC = 23
-REPORT_MINUTE_UTC = 55
+REPORT_HOUR_UTC = 0
+REPORT_MINUTE_UTC = 5
+
+TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def get_connection():
@@ -34,6 +45,51 @@ def get_connection():
     )
 
     return connection
+
+
+def interval_minutes(interval):
+    if interval.endswith("min"):
+        return int(
+            interval.replace(
+                "min",
+                "",
+            )
+        )
+
+    if interval.endswith("h"):
+        return (
+            int(
+                interval.replace(
+                    "h",
+                    "",
+                )
+            )
+            * 60
+        )
+
+    raise ValueError(
+        f"Unsupported interval: "
+        f"{interval}"
+    )
+
+
+def effective_time(
+    candle_time,
+    interval,
+):
+    candle_open = datetime.strptime(
+        candle_time,
+        TIME_FORMAT,
+    )
+
+    return (
+        candle_open
+        + timedelta(
+            minutes=interval_minutes(
+                interval
+            )
+        )
+    )
 
 
 def init_daily_report_table():
@@ -58,8 +114,11 @@ def report_already_sent(
         row = connection.execute(
             """
             SELECT report_date
+
             FROM daily_report_log
+
             WHERE report_date = ?
+
             LIMIT 1
             """,
             (
@@ -76,7 +135,7 @@ def mark_report_sent(
     sent_at = datetime.now(
         timezone.utc
     ).strftime(
-        "%Y-%m-%d %H:%M:%S"
+        TIME_FORMAT
     )
 
     with get_connection() as connection:
@@ -87,6 +146,7 @@ def mark_report_sent(
                 report_date,
                 sent_at
             )
+
             VALUES (?, ?)
             """,
             (
@@ -98,126 +158,296 @@ def mark_report_sent(
         connection.commit()
 
 
+def empty_symbol_stats():
+    return {
+        "trades": 0,
+        "take_profits": 0,
+        "stop_losses": 0,
+        "timeouts": 0,
+        "ambiguous": 0,
+        "net_pips": 0.0,
+        "total_r": 0.0,
+        "r_count": 0,
+        "avg_r": 0.0,
+        "signals": 0,
+        "open_trades": 0,
+    }
+
+
+def ensure_symbol(
+    stats_by_symbol,
+    symbol,
+):
+    if symbol not in stats_by_symbol:
+        stats_by_symbol[
+            symbol
+        ] = empty_symbol_stats()
+
+    return stats_by_symbol[
+        symbol
+    ]
+
+
 def get_daily_statistics(
     report_date
 ):
-    date_prefix = (
-        f"{report_date}%"
+    report_day = datetime.strptime(
+        report_date,
+        "%Y-%m-%d",
+    ).date()
+
+    window_start = (
+        datetime.combine(
+            report_day,
+            datetime.min.time(),
+        )
+        - timedelta(days=1)
+    ).strftime(
+        TIME_FORMAT
     )
+
+    window_end = (
+        datetime.combine(
+            report_day,
+            datetime.min.time(),
+        )
+        + timedelta(days=1)
+    ).strftime(
+        TIME_FORMAT
+    )
+
+    stats_by_symbol = {
+        symbol: empty_symbol_stats()
+        for symbol in SYMBOLS
+    }
 
     with get_connection() as connection:
         trades = connection.execute(
             """
             SELECT
-                COUNT(*) AS total,
-                SUM(
-                    CASE
-                        WHEN exit_reason = 'TAKE_PROFIT'
-                        THEN 1
-                        ELSE 0
-                    END
-                ) AS take_profits,
-                SUM(
-                    CASE
-                        WHEN exit_reason = 'STOP_LOSS'
-                        THEN 1
-                        ELSE 0
-                    END
-                ) AS stop_losses,
-                SUM(
-                    CASE
-                        WHEN exit_reason = 'TIMEOUT'
-                        THEN 1
-                        ELSE 0
-                    END
-                ) AS timeouts,
-                SUM(
-                    CASE
-                        WHEN status = 'AMBIGUOUS'
-                        THEN 1
-                        ELSE 0
-                    END
-                ) AS ambiguous,
-                SUM(
-                    COALESCE(
-                        net_pnl_pips,
-                        0
-                    )
-                ) AS net_pips,
-                AVG(
-                    r_multiple
-                ) AS avg_r
+                symbol,
+                interval,
+                status,
+                exit_candle_time,
+                exit_reason,
+                net_pnl_pips,
+                r_multiple
+
             FROM virtual_trades
+
             WHERE model_version = ?
               AND status != 'OPEN'
-              AND exit_candle_time LIKE ?
+              AND exit_candle_time IS NOT NULL
+              AND exit_candle_time >= ?
+              AND exit_candle_time < ?
             """,
             (
                 TRADE_MODEL_VERSION,
-                date_prefix,
+                window_start,
+                window_end,
             ),
-        ).fetchone()
+        ).fetchall()
 
         signals = connection.execute(
             """
-            SELECT COUNT(*) AS total
+            SELECT
+                symbol,
+                interval,
+                candle_time
+
             FROM signal_events
-            WHERE candle_time LIKE ?
+
+            WHERE candle_time >= ?
+              AND candle_time < ?
             """,
             (
-                date_prefix,
+                window_start,
+                window_end,
             ),
-        ).fetchone()
+        ).fetchall()
 
         open_trades = connection.execute(
             """
-            SELECT COUNT(*) AS total
+            SELECT
+                symbol,
+                COUNT(*) AS total
+
             FROM virtual_trades
+
             WHERE model_version = ?
               AND status = 'OPEN'
+
+            GROUP BY symbol
             """,
             (
                 TRADE_MODEL_VERSION,
             ),
-        ).fetchone()
+        ).fetchall()
+
+    for trade in trades:
+        closed_at = effective_time(
+            trade[
+                "exit_candle_time"
+            ],
+            trade["interval"],
+        )
+
+        if closed_at.date() != report_day:
+            continue
+
+        stats = ensure_symbol(
+            stats_by_symbol,
+            trade["symbol"],
+        )
+
+        stats["trades"] += 1
+
+        if (
+            trade["exit_reason"]
+            == "TAKE_PROFIT"
+        ):
+            stats[
+                "take_profits"
+            ] += 1
+
+        elif (
+            trade["exit_reason"]
+            == "STOP_LOSS"
+        ):
+            stats[
+                "stop_losses"
+            ] += 1
+
+        elif (
+            trade["exit_reason"]
+            == "TIMEOUT"
+        ):
+            stats[
+                "timeouts"
+            ] += 1
+
+        if (
+            trade["status"]
+            == "AMBIGUOUS"
+        ):
+            stats[
+                "ambiguous"
+            ] += 1
+
+        if (
+            trade["net_pnl_pips"]
+            is not None
+        ):
+            stats["net_pips"] += float(
+                trade[
+                    "net_pnl_pips"
+                ]
+            )
+
+        if (
+            trade["r_multiple"]
+            is not None
+        ):
+            stats["total_r"] += float(
+                trade[
+                    "r_multiple"
+                ]
+            )
+
+            stats["r_count"] += 1
+
+    for signal in signals:
+        signal_at = effective_time(
+            signal["candle_time"],
+            signal["interval"],
+        )
+
+        if signal_at.date() != report_day:
+            continue
+
+        stats = ensure_symbol(
+            stats_by_symbol,
+            signal["symbol"],
+        )
+
+        stats["signals"] += 1
+
+    for row in open_trades:
+        stats = ensure_symbol(
+            stats_by_symbol,
+            row["symbol"],
+        )
+
+        stats["open_trades"] = (
+            row["total"]
+            or 0
+        )
+
+    for stats in (
+        stats_by_symbol.values()
+    ):
+        if stats["r_count"] > 0:
+            stats["avg_r"] = (
+                stats["total_r"]
+                / stats["r_count"]
+            )
+
+    total = empty_symbol_stats()
+
+    for stats in (
+        stats_by_symbol.values()
+    ):
+        total["trades"] += (
+            stats["trades"]
+        )
+
+        total[
+            "take_profits"
+        ] += stats[
+            "take_profits"
+        ]
+
+        total[
+            "stop_losses"
+        ] += stats[
+            "stop_losses"
+        ]
+
+        total["timeouts"] += (
+            stats["timeouts"]
+        )
+
+        total["ambiguous"] += (
+            stats["ambiguous"]
+        )
+
+        total["total_r"] += (
+            stats["total_r"]
+        )
+
+        total["r_count"] += (
+            stats["r_count"]
+        )
+
+        total["signals"] += (
+            stats["signals"]
+        )
+
+        total[
+            "open_trades"
+        ] += stats[
+            "open_trades"
+        ]
+
+    if total["r_count"] > 0:
+        total["avg_r"] = (
+            total["total_r"]
+            / total["r_count"]
+        )
 
     return {
-        "trades": (
-            trades["total"]
-            or 0
-        ),
-        "take_profits": (
-            trades["take_profits"]
-            or 0
-        ),
-        "stop_losses": (
-            trades["stop_losses"]
-            or 0
-        ),
-        "timeouts": (
-            trades["timeouts"]
-            or 0
-        ),
-        "ambiguous": (
-            trades["ambiguous"]
-            or 0
-        ),
-        "net_pips": (
-            trades["net_pips"]
-            or 0.0
-        ),
-        "avg_r": (
-            trades["avg_r"]
-            or 0.0
-        ),
-        "signals": (
-            signals["total"]
-            or 0
-        ),
-        "open_trades": (
-            open_trades["total"]
-            or 0
-        ),
+        "total": total,
+        "symbols": stats_by_symbol,
     }
 
 
@@ -244,50 +474,116 @@ def build_daily_report(
         )
     )
 
-    text = (
-        "📊 <b>AS · DAILY REPORT</b>\n"
-        "\n"
-        f"📅 <b>{formatted_date}</b>\n"
-        "\n"
-        f"Completed trades: "
-        f"<b>{stats['trades']}</b>\n"
-        f"✅ Take Profit: "
-        f"<b>{stats['take_profits']}</b>\n"
-        f"❌ Stop Loss: "
-        f"<b>{stats['stop_losses']}</b>\n"
-        f"⏱ Time Exit: "
-        f"<b>{stats['timeouts']}</b>\n"
-    )
+    total = stats["total"]
 
-    if stats["ambiguous"] > 0:
-        text += (
-            f"⚠️ Ambiguous: "
-            f"<b>{stats['ambiguous']}</b>\n"
+    lines = [
+        "📊 <b>AS · DAILY REPORT</b>",
+        "",
+        f"📅 <b>{formatted_date}</b>",
+        "",
+        "🌐 <b>ALL MARKETS</b>",
+        (
+            "Completed trades: "
+            f"<b>{total['trades']}</b>"
+        ),
+        (
+            "✅ Take Profit: "
+            f"<b>{total['take_profits']}</b>"
+        ),
+        (
+            "❌ Stop Loss: "
+            f"<b>{total['stop_losses']}</b>"
+        ),
+        (
+            "⏱ Time Exit: "
+            f"<b>{total['timeouts']}</b>"
+        ),
+    ]
+
+    if total["ambiguous"] > 0:
+        lines.append(
+            "⚠️ Ambiguous: "
+            f"<b>{total['ambiguous']}</b>"
         )
 
-    text += (
-        "\n"
-        f"💰 Net result: "
-        f"<b>{stats['net_pips']:+.2f} "
-        f"pips</b>\n"
-        f"📐 Average R: "
-        f"<b>{stats['avg_r']:+.2f}R</b>\n"
-        "\n"
-        f"🔎 Signals detected: "
-        f"<b>{stats['signals']}</b>\n"
-        f"🔓 Open trades now: "
-        f"<b>{stats['open_trades']}</b>\n"
-        "\n"
-        "🕒 <b>All times UTC</b>\n"
-        "\n"
-        "<i>Transparent V2 simulated "
-        "trade statistics.</i>\n"
-        "\n"
-        "<b>AS | Forex & Crypto</b>\n"
-        "@ASForexCrypto"
+    lines.extend(
+        [
+            (
+                "📈 Total result: "
+                f"<b>{total['total_r']:+.2f}R</b>"
+            ),
+            (
+                "📐 Average R: "
+                f"<b>{total['avg_r']:+.2f}R</b>"
+            ),
+            (
+                "🔎 Signals detected: "
+                f"<b>{total['signals']}</b>"
+            ),
+            (
+                "🔓 Open trades now: "
+                f"<b>{total['open_trades']}</b>"
+            ),
+        ]
     )
 
-    return text
+    for symbol in SYMBOLS:
+        symbol_stats = stats[
+            "symbols"
+        ].get(
+            symbol,
+            empty_symbol_stats(),
+        )
+
+        lines.extend(
+            [
+                "",
+                f"💱 <b>{symbol}</b>",
+                (
+                    "Closed: "
+                    f"<b>{symbol_stats['trades']}</b>"
+                    " · "
+                    "TP: "
+                    f"<b>{symbol_stats['take_profits']}</b>"
+                    " · "
+                    "SL: "
+                    f"<b>{symbol_stats['stop_losses']}</b>"
+                ),
+                (
+                    "Net: "
+                    f"<b>{symbol_stats['net_pips']:+.2f} pips</b>"
+                    " · "
+                    "R: "
+                    f"<b>{symbol_stats['total_r']:+.2f}R</b>"
+                ),
+                (
+                    "Signals: "
+                    f"<b>{symbol_stats['signals']}</b>"
+                    " · "
+                    "Open now: "
+                    f"<b>{symbol_stats['open_trades']}</b>"
+                ),
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "🕒 <b>All times UTC</b>",
+            "",
+            (
+                "<i>Transparent V2 simulated "
+                "trade statistics.</i>"
+            ),
+            "",
+            "<b>AS | Forex & Crypto</b>",
+            "@ASForexCrypto",
+        ]
+    )
+
+    return "\n".join(
+        lines
+    )
 
 
 def send_free_channel_message(
@@ -315,10 +611,17 @@ def send_free_channel_message(
         response = requests.post(
             url,
             json={
-                "chat_id": FREE_CHANNEL_ID,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
+                "chat_id":
+                    FREE_CHANNEL_ID,
+
+                "text":
+                    text,
+
+                "parse_mode":
+                    "HTML",
+
+                "disable_web_page_preview":
+                    True,
             },
             timeout=15,
         )
@@ -354,9 +657,7 @@ def send_daily_report_if_due():
         timezone.utc
     )
 
-    if (
-        now.hour < REPORT_HOUR_UTC
-    ):
+    if now.hour < REPORT_HOUR_UTC:
         return False
 
     if (
@@ -367,10 +668,13 @@ def send_daily_report_if_due():
     ):
         return False
 
+    # Report the complete
+    # previous UTC day.
     report_date = (
-        now.strftime(
-            "%Y-%m-%d"
-        )
+        now.date()
+        - timedelta(days=1)
+    ).strftime(
+        "%Y-%m-%d"
     )
 
     if report_already_sent(
@@ -401,9 +705,10 @@ def send_daily_report_if_due():
         print(
             "DAILY REPORT SENT | "
             f"Date={report_date} | "
-            f"Trades={stats['trades']} | "
-            f"NetPips="
-            f"{stats['net_pips']:+.2f}",
+            f"Trades="
+            f"{stats['total']['trades']} | "
+            f"TotalR="
+            f"{stats['total']['total_r']:+.2f}R",
             flush=True,
         )
 
