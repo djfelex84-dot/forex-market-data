@@ -2,6 +2,7 @@ import os
 import sqlite3
 import threading
 import time
+import html
 
 import requests
 
@@ -32,22 +33,24 @@ API_BASE_URL = (
 )
 
 POLL_TIMEOUT_SECONDS = 25
-
 RETRY_SECONDS = 5
 
 STATE_KEY = "last_update_id"
 
-
-BUTTON_STATUS = "📊 My Status"
-BUTTON_VIP = "⭐ VIP"
-BUTTON_FREE = "📢 Free Channel"
-BUTTON_ABOUT = "ℹ️ About"
-BUTTON_HELP = "❓ Help"
+CALLBACK_MENU = "MENU"
+CALLBACK_STATUS = "STATUS"
+CALLBACK_VIP = "VIP"
+CALLBACK_ABOUT = "ABOUT"
+CALLBACK_HELP = "HELP"
 
 
 _polling_started = False
 _polling_lock = threading.Lock()
 
+
+# ============================================================
+# DATABASE
+# ============================================================
 
 def get_connection():
     connection = sqlite3.connect(
@@ -147,12 +150,22 @@ def save_last_update_id(
         connection.commit()
 
 
+# ============================================================
+# TELEGRAM API
+# ============================================================
+
 def telegram_request(
     method,
     payload=None,
     timeout=15,
 ):
     if not BOT_TOKEN:
+        print(
+            "USER BOT ERROR | "
+            "TELEGRAM_BOT_TOKEN missing",
+            flush=True,
+        )
+
         return None
 
     try:
@@ -162,85 +175,78 @@ def telegram_request(
             timeout=timeout,
         )
 
-        response.raise_for_status()
-
-        data = response.json()
-
-        if not data.get(
-            "ok"
-        ):
-            print(
-                "USER BOT TELEGRAM ERROR | "
-                f"{method} | "
-                f"{data}",
-                flush=True,
-            )
-
-            return None
-
-        return data
-
     except Exception as error:
         print(
             "USER BOT REQUEST ERROR | "
             f"{method} | "
-            f"{type(error).__name__}: "
-            f"{error}",
+            f"{type(error).__name__}",
             flush=True,
         )
 
         return None
 
+    if response.status_code >= 400:
+        print(
+            "USER BOT REQUEST ERROR | "
+            f"{method} | "
+            f"HTTP "
+            f"{response.status_code} "
+            f"{response.reason}",
+            flush=True,
+        )
 
-def main_keyboard():
-    return {
-        "keyboard": [
-            [
-                {
-                    "text":
-                        BUTTON_STATUS
-                },
-                {
-                    "text":
-                        BUTTON_VIP
-                },
-            ],
-            [
-                {
-                    "text":
-                        BUTTON_FREE
-                },
-                {
-                    "text":
-                        BUTTON_ABOUT
-                },
-            ],
-            [
-                {
-                    "text":
-                        BUTTON_HELP
-                },
-            ],
-        ],
+        return None
 
-        "resize_keyboard":
-            True,
+    try:
+        data = response.json()
 
-        "one_time_keyboard":
-            False,
+    except Exception:
+        print(
+            "USER BOT REQUEST ERROR | "
+            f"{method} | "
+            "Invalid JSON response",
+            flush=True,
+        )
 
-        "is_persistent":
-            True,
+        return None
 
-        "input_field_placeholder":
-            "Choose an option",
-    }
+    if not data.get(
+        "ok"
+    ):
+        print(
+            "USER BOT TELEGRAM ERROR | "
+            f"{method}",
+            flush=True,
+        )
+
+        return None
+
+    return data
 
 
-def send_private_message(
+def answer_callback_query(
+    callback_query_id
+):
+    if not callback_query_id:
+        return False
+
+    result = telegram_request(
+        "answerCallbackQuery",
+        {
+            "callback_query_id":
+                callback_query_id,
+        },
+    )
+
+    return (
+        result is not None
+    )
+
+
+def send_inline_message(
     chat_id,
     text,
-    show_keyboard=True,
+    reply_markup=None,
 ):
     payload = {
         "chat_id":
@@ -256,13 +262,49 @@ def send_private_message(
             True,
     }
 
-    if show_keyboard:
+    if reply_markup is not None:
         payload[
             "reply_markup"
-        ] = main_keyboard()
+        ] = reply_markup
 
     result = telegram_request(
         "sendMessage",
+        payload,
+    )
+
+    return result
+
+
+def edit_inline_message(
+    chat_id,
+    message_id,
+    text,
+    reply_markup=None,
+):
+    payload = {
+        "chat_id":
+            chat_id,
+
+        "message_id":
+            message_id,
+
+        "text":
+            text,
+
+        "parse_mode":
+            "HTML",
+
+        "disable_web_page_preview":
+            True,
+    }
+
+    if reply_markup is not None:
+        payload[
+            "reply_markup"
+        ] = reply_markup
+
+    result = telegram_request(
+        "editMessageText",
         payload,
     )
 
@@ -271,8 +313,813 @@ def send_private_message(
     )
 
 
+# ============================================================
+# LANGUAGE
+# ============================================================
+
+def get_language(
+    telegram_user
+):
+    language_code = (
+        telegram_user.get(
+            "language_code"
+        )
+        or ""
+    ).lower()
+
+    if language_code.startswith(
+        "ru"
+    ):
+        return "ru"
+
+    return "en"
+
+
+# ============================================================
+# FREE CHANNEL
+# ============================================================
+
+def get_free_channel_url():
+    value = (
+        FREE_CHANNEL_USERNAME
+        or "@ASForexCrypto"
+    )
+
+    if value.startswith(
+        "@"
+    ):
+        return (
+            "https://t.me/"
+            + value[1:]
+        )
+
+    if value.startswith(
+        "https://"
+    ):
+        return value
+
+    return (
+        "https://t.me/"
+        "ASForexCrypto"
+    )
+
+
+# ============================================================
+# INLINE KEYBOARDS
+# ============================================================
+
+def start_keyboard(
+    language
+):
+    if language == "ru":
+        button_text = (
+            "🚀 ОТКРЫТЬ МЕНЮ"
+        )
+
+    else:
+        button_text = (
+            "🚀 OPEN MENU"
+        )
+
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text":
+                        button_text,
+
+                    "callback_data":
+                        CALLBACK_MENU,
+                }
+            ]
+        ]
+    }
+
+
+def main_menu_keyboard(
+    language
+):
+    if language == "ru":
+        status_text = (
+            "📊 Мой статус"
+        )
+
+        vip_text = (
+            "⭐ VIP"
+        )
+
+        channel_text = (
+            "📢 Бесплатный канал"
+        )
+
+        about_text = (
+            "ℹ️ О проекте"
+        )
+
+        help_text = (
+            "❓ Помощь"
+        )
+
+    else:
+        status_text = (
+            "📊 My Status"
+        )
+
+        vip_text = (
+            "⭐ VIP"
+        )
+
+        channel_text = (
+            "📢 Free Channel"
+        )
+
+        about_text = (
+            "ℹ️ About"
+        )
+
+        help_text = (
+            "❓ Help"
+        )
+
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text":
+                        status_text,
+
+                    "callback_data":
+                        CALLBACK_STATUS,
+                }
+            ],
+
+            [
+                {
+                    "text":
+                        vip_text,
+
+                    "callback_data":
+                        CALLBACK_VIP,
+                }
+            ],
+
+            [
+                {
+                    "text":
+                        channel_text,
+
+                    "url":
+                        get_free_channel_url(),
+                }
+            ],
+
+            [
+                {
+                    "text":
+                        about_text,
+
+                    "callback_data":
+                        CALLBACK_ABOUT,
+                }
+            ],
+
+            [
+                {
+                    "text":
+                        help_text,
+
+                    "callback_data":
+                        CALLBACK_HELP,
+                }
+            ],
+        ]
+    }
+
+
+def back_to_menu_keyboard(
+    language
+):
+    if language == "ru":
+        button_text = (
+            "🏠 Главное меню"
+        )
+
+    else:
+        button_text = (
+            "🏠 Main Menu"
+        )
+
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text":
+                        button_text,
+
+                    "callback_data":
+                        CALLBACK_MENU,
+                }
+            ]
+        ]
+    }
+
+
+def channel_keyboard(
+    language
+):
+    if language == "ru":
+        open_text = (
+            "📢 Открыть канал"
+        )
+
+        back_text = (
+            "🏠 Главное меню"
+        )
+
+    else:
+        open_text = (
+            "📢 Open Channel"
+        )
+
+        back_text = (
+            "🏠 Main Menu"
+        )
+
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text":
+                        open_text,
+
+                    "url":
+                        get_free_channel_url(),
+                }
+            ],
+
+            [
+                {
+                    "text":
+                        back_text,
+
+                    "callback_data":
+                        CALLBACK_MENU,
+                }
+            ],
+        ]
+    }
+
+
+# ============================================================
+# TEXTS
+# ============================================================
+
+def start_text(
+    language,
+    first_name,
+    plan,
+):
+    safe_name = html.escape(
+        first_name
+        or ""
+    )
+
+    safe_plan = html.escape(
+        plan
+        or "FREE"
+    )
+
+    if language == "ru":
+        if safe_name:
+            greeting = (
+                f"Привет, {safe_name}!"
+            )
+        else:
+            greeting = (
+                "Привет!"
+            )
+
+        return (
+            f"👋 <b>{greeting}</b>\n"
+            "\n"
+            "Добро пожаловать в "
+            "<b>AS | Forex & Crypto</b>.\n"
+            "\n"
+            "Ваш текущий тариф: "
+            f"<b>{safe_plan}</b>\n"
+            "\n"
+            "Нажмите кнопку ниже, "
+            "чтобы открыть меню.\n"
+            "\n"
+            "⚠️ Проект сейчас находится "
+            "на этапе тестирования "
+            "и исследования.\n"
+            "\n"
+            "<i>Гарантированной прибыли нет. "
+            "Торговля связана с риском.</i>"
+        )
+
+    if safe_name:
+        greeting = (
+            f"Hello, {safe_name}!"
+        )
+    else:
+        greeting = (
+            "Hello!"
+        )
+
+    return (
+        f"👋 <b>{greeting}</b>\n"
+        "\n"
+        "Welcome to "
+        "<b>AS | Forex & Crypto</b>.\n"
+        "\n"
+        "Your current plan: "
+        f"<b>{safe_plan}</b>\n"
+        "\n"
+        "Press the button below "
+        "to open the menu.\n"
+        "\n"
+        "⚠️ The project is currently "
+        "in the testing and "
+        "research stage.\n"
+        "\n"
+        "<i>No guaranteed profits. "
+        "Trading involves risk.</i>"
+    )
+
+
+def main_menu_text(
+    language
+):
+    if language == "ru":
+        return (
+            "🏠 <b>AS | Forex & Crypto</b>\n"
+            "\n"
+            "Выберите нужный раздел:"
+        )
+
+    return (
+        "🏠 <b>AS | Forex & Crypto</b>\n"
+        "\n"
+        "Choose a section:"
+    )
+
+
+def status_text(
+    telegram_user_id,
+    language,
+):
+    access = (
+        get_effective_access(
+            telegram_user_id
+        )
+    )
+
+    if access is None:
+        if language == "ru":
+            return (
+                "Аккаунт ещё не зарегистрирован.\n"
+                "\n"
+                "Нажмите START."
+            )
+
+        return (
+            "Your account is not "
+            "registered yet.\n"
+            "\n"
+            "Press START."
+        )
+
+    plan = (
+        access.get(
+            "plan"
+        )
+        or "FREE"
+    )
+
+    expires_at = (
+        access.get(
+            "expires_at"
+        )
+    )
+
+    if language == "ru":
+        if plan == "VIP":
+            expires_text = (
+                expires_at
+                or "Без ограничения"
+            )
+
+            return (
+                "👤 <b>Мой статус</b>\n"
+                "\n"
+                "Тариф: <b>VIP</b>\n"
+                "Статус: <b>ACTIVE</b>\n"
+                "Действует до: "
+                f"<b>{html.escape(str(expires_text))} UTC</b>"
+            )
+
+        return (
+            "👤 <b>Мой статус</b>\n"
+            "\n"
+            "Тариф: <b>FREE</b>\n"
+            "Статус: <b>ACTIVE</b>\n"
+            "Срок действия: "
+            "<b>без ограничения</b>"
+        )
+
+    if plan == "VIP":
+        expires_text = (
+            expires_at
+            or "No expiration"
+        )
+
+        return (
+            "👤 <b>My Status</b>\n"
+            "\n"
+            "Plan: <b>VIP</b>\n"
+            "Status: <b>ACTIVE</b>\n"
+            "Expires: "
+            f"<b>{html.escape(str(expires_text))} UTC</b>"
+        )
+
+    return (
+        "👤 <b>My Status</b>\n"
+        "\n"
+        "Plan: <b>FREE</b>\n"
+        "Status: <b>ACTIVE</b>\n"
+        "Expiration: <b>None</b>"
+    )
+
+
+def vip_text(
+    language
+):
+    if language == "ru":
+        return (
+            "⭐ <b>AS VIP</b>\n"
+            "\n"
+            "VIP будет предоставлять доступ "
+            "к торговым сигналам с:\n"
+            "\n"
+            "🎯 Entry\n"
+            "🛑 Stop Loss\n"
+            "🏁 Take Profit\n"
+            "📊 прозрачными результатами\n"
+            "\n"
+            "Сейчас стратегия ещё проходит "
+            "исследование и тестирование.\n"
+            "\n"
+            "Поэтому покупка VIP пока "
+            "<b>недоступна</b>.\n"
+            "\n"
+            "Когда сервис будет готов, "
+            "оформить подписку можно будет "
+            "прямо через этого бота."
+        )
+
+    return (
+        "⭐ <b>AS VIP</b>\n"
+        "\n"
+        "VIP will provide access "
+        "to trading signals with:\n"
+        "\n"
+        "🎯 Entry\n"
+        "🛑 Stop Loss\n"
+        "🏁 Take Profit\n"
+        "📊 transparent results\n"
+        "\n"
+        "The strategy is currently "
+        "being researched and tested.\n"
+        "\n"
+        "VIP access is therefore "
+        "<b>not available for purchase yet</b>.\n"
+        "\n"
+        "When the service is ready, "
+        "subscription options will appear "
+        "directly in this bot."
+    )
+
+
+def about_text(
+    language
+):
+    if language == "ru":
+        return (
+            "ℹ️ <b>О проекте AS</b>\n"
+            "\n"
+            "<b>AS | Forex & Crypto</b> — "
+            "сервис анализа рынка "
+            "и торговых сигналов, "
+            "который сейчас находится "
+            "в разработке.\n"
+            "\n"
+            "Наши принципы:\n"
+            "\n"
+            "• понятные Entry / SL / TP\n"
+            "• прозрачная статистика\n"
+            "• убыточные сделки не скрываются\n"
+            "• никаких обещаний гарантированной прибыли\n"
+            "• сначала тестирование, потом запуск\n"
+            "\n"
+            "🕒 Рыночное время отображается "
+            "в <b>UTC</b>."
+        )
+
+    return (
+        "ℹ️ <b>About AS</b>\n"
+        "\n"
+        "<b>AS | Forex & Crypto</b> "
+        "is being developed as a "
+        "market analysis and trading "
+        "signal service.\n"
+        "\n"
+        "Our principles:\n"
+        "\n"
+        "• clear Entry / SL / TP\n"
+        "• transparent statistics\n"
+        "• losing trades are not hidden\n"
+        "• no guaranteed profit promises\n"
+        "• testing before launch\n"
+        "\n"
+        "🕒 Market times are shown "
+        "in <b>UTC</b>."
+    )
+
+
+def help_text(
+    language
+):
+    if language == "ru":
+        return (
+            "❓ <b>Помощь</b>\n"
+            "\n"
+            "Для управления ботом "
+            "используйте кнопки меню.\n"
+            "\n"
+            "📊 <b>Мой статус</b> — "
+            "ваш текущий тариф\n"
+            "\n"
+            "⭐ <b>VIP</b> — "
+            "информация о VIP\n"
+            "\n"
+            "📢 <b>Бесплатный канал</b> — "
+            "публичный Telegram-канал\n"
+            "\n"
+            "ℹ️ <b>О проекте</b> — "
+            "информация об AS\n"
+            "\n"
+            "Также доступны команды:\n"
+            "/start\n"
+            "/status\n"
+            "/vip\n"
+            "/channel\n"
+            "/about\n"
+            "/help"
+        )
+
+    return (
+        "❓ <b>Help</b>\n"
+        "\n"
+        "Use the menu buttons "
+        "to control the bot.\n"
+        "\n"
+        "📊 <b>My Status</b> — "
+        "your current plan\n"
+        "\n"
+        "⭐ <b>VIP</b> — "
+        "VIP information\n"
+        "\n"
+        "📢 <b>Free Channel</b> — "
+        "public Telegram channel\n"
+        "\n"
+        "ℹ️ <b>About</b> — "
+        "information about AS\n"
+        "\n"
+        "Commands are also available:\n"
+        "/start\n"
+        "/status\n"
+        "/vip\n"
+        "/channel\n"
+        "/about\n"
+        "/help"
+    )
+
+
+def channel_text(
+    language
+):
+    if language == "ru":
+        return (
+            "📢 <b>Бесплатный канал</b>\n"
+            "\n"
+            "Анализ рынка, новости, "
+            "исследования и прозрачная "
+            "статистика.\n"
+            "\n"
+            "Нажмите кнопку ниже, "
+            "чтобы открыть канал."
+        )
+
+    return (
+        "📢 <b>Free Channel</b>\n"
+        "\n"
+        "Market analysis, news, "
+        "research and transparent "
+        "statistics.\n"
+        "\n"
+        "Press the button below "
+        "to open the channel."
+    )
+
+
+def unknown_text(
+    language
+):
+    if language == "ru":
+        return (
+            "Я не распознал эту команду.\n"
+            "\n"
+            "Откройте главное меню."
+        )
+
+    return (
+        "I don't recognize that command.\n"
+        "\n"
+        "Open the main menu."
+    )
+
+
+# ============================================================
+# USER REGISTRATION
+# ============================================================
+
+def register_telegram_user(
+    telegram_user
+):
+    telegram_user_id = (
+        telegram_user.get(
+            "id"
+        )
+    )
+
+    if telegram_user_id is None:
+        return None
+
+    return register_or_update_user(
+        telegram_user_id=(
+            telegram_user_id
+        ),
+
+        username=(
+            telegram_user.get(
+                "username"
+            )
+        ),
+
+        first_name=(
+            telegram_user.get(
+                "first_name"
+            )
+        ),
+
+        last_name=(
+            telegram_user.get(
+                "last_name"
+            )
+        ),
+    )
+
+
+# ============================================================
+# START
+# ============================================================
+
+def send_start_screen(
+    chat_id,
+    telegram_user,
+):
+    language = get_language(
+        telegram_user
+    )
+
+    telegram_user_id = (
+        telegram_user.get(
+            "id"
+        )
+    )
+
+    access = (
+        get_effective_access(
+            telegram_user_id
+        )
+    )
+
+    plan = (
+        access.get(
+            "plan"
+        )
+        if access
+        else "FREE"
+    )
+
+    payload = {
+        "chat_id":
+            chat_id,
+
+        "text":
+            start_text(
+                language=language,
+                first_name=(
+                    telegram_user.get(
+                        "first_name"
+                    )
+                ),
+                plan=plan,
+            ),
+
+        "parse_mode":
+            "HTML",
+
+        "disable_web_page_preview":
+            True,
+
+        # Removes the old persistent
+        # reply keyboard from the
+        # previous bot version.
+        "reply_markup": {
+            "remove_keyboard":
+                True,
+        },
+    }
+
+    result = telegram_request(
+        "sendMessage",
+        payload,
+    )
+
+    if result is None:
+        return False
+
+    message = (
+        result.get(
+            "result"
+        )
+        or {}
+    )
+
+    message_id = (
+        message.get(
+            "message_id"
+        )
+    )
+
+    if message_id is None:
+        return True
+
+    # Add the large inline OPEN MENU
+    # button to the same message.
+    edit_result = telegram_request(
+        "editMessageReplyMarkup",
+        {
+            "chat_id":
+                chat_id,
+
+            "message_id":
+                message_id,
+
+            "reply_markup":
+                start_keyboard(
+                    language
+                ),
+        },
+    )
+
+    if edit_result is None:
+        send_inline_message(
+            chat_id=chat_id,
+            text=(
+                "🚀"
+                if language == "en"
+                else "🚀"
+            ),
+            reply_markup=(
+                start_keyboard(
+                    language
+                )
+            ),
+        )
+
+    return True
+
+
+# ============================================================
+# COMMANDS
+# ============================================================
+
 def set_bot_commands():
-    commands = [
+    english_commands = [
         {
             "command":
                 "start",
@@ -299,7 +1146,7 @@ def set_bot_commands():
                 "channel",
 
             "description":
-                "Open Free channel",
+                "Free channel",
         },
         {
             "command":
@@ -317,15 +1164,74 @@ def set_bot_commands():
         },
     ]
 
-    result = telegram_request(
+    russian_commands = [
+        {
+            "command":
+                "start",
+
+            "description":
+                "Открыть бота AS",
+        },
+        {
+            "command":
+                "status",
+
+            "description":
+                "Моя подписка",
+        },
+        {
+            "command":
+                "vip",
+
+            "description":
+                "Информация о VIP",
+        },
+        {
+            "command":
+                "channel",
+
+            "description":
+                "Бесплатный канал",
+        },
+        {
+            "command":
+                "about",
+
+            "description":
+                "О проекте AS",
+        },
+        {
+            "command":
+                "help",
+
+            "description":
+                "Помощь",
+        },
+    ]
+
+    english_result = telegram_request(
         "setMyCommands",
         {
             "commands":
-                commands,
+                english_commands,
         },
     )
 
-    if result is None:
+    russian_result = telegram_request(
+        "setMyCommands",
+        {
+            "commands":
+                russian_commands,
+
+            "language_code":
+                "ru",
+        },
+    )
+
+    if (
+        english_result is None
+        or russian_result is None
+    ):
         print(
             "User bot: "
             "command menu setup failed",
@@ -343,271 +1249,9 @@ def set_bot_commands():
     return True
 
 
-def start_text(
-    first_name=None,
-):
-    if first_name:
-        greeting = (
-            f"Hello, "
-            f"{first_name}!"
-        )
-    else:
-        greeting = (
-            "Hello!"
-        )
-
-    return (
-        f"👋 <b>{greeting}</b>\n"
-        "\n"
-        "Welcome to "
-        "<b>AS | Forex & Crypto</b>.\n"
-        "\n"
-        "📊 Market analysis\n"
-        "📈 Forex & Crypto research\n"
-        "🔔 Trading signals\n"
-        "📉 Transparent results\n"
-        "\n"
-        "Your current plan: "
-        "<b>FREE</b>\n"
-        "\n"
-        "Use the buttons below "
-        "to explore the service.\n"
-        "\n"
-        "⚠️ The project is currently "
-        "in the testing and research stage.\n"
-        "\n"
-        "<i>No guaranteed profits. "
-        "Trading involves risk.</i>"
-    )
-
-
-def status_text(
-    telegram_user_id
-):
-    access = (
-        get_effective_access(
-            telegram_user_id
-        )
-    )
-
-    if access is None:
-        return (
-            "Your account is not "
-            "registered yet.\n\n"
-            "Press START first."
-        )
-
-    if (
-        access[
-            "plan"
-        ]
-        == "VIP"
-    ):
-        expires_at = (
-            access.get(
-                "expires_at"
-            )
-            or "No expiration"
-        )
-
-        return (
-            "👤 <b>My Status</b>\n"
-            "\n"
-            "Plan: <b>VIP</b>\n"
-            "Status: <b>ACTIVE</b>\n"
-            f"Expires: "
-            f"<b>{expires_at} UTC</b>"
-        )
-
-    return (
-        "👤 <b>My Status</b>\n"
-        "\n"
-        "Plan: <b>FREE</b>\n"
-        "Status: <b>ACTIVE</b>\n"
-        "Expiration: <b>None</b>"
-    )
-
-
-def vip_text():
-    return (
-        "⭐ <b>AS VIP</b>\n"
-        "\n"
-        "VIP will provide access to "
-        "selected trading signals "
-        "with Entry, Stop Loss, "
-        "Take Profit and transparent "
-        "results.\n"
-        "\n"
-        "The strategy is currently "
-        "being researched and tested.\n"
-        "\n"
-        "VIP access is therefore "
-        "<b>not available for purchase yet</b>.\n"
-        "\n"
-        "When the service is ready, "
-        "subscription options will "
-        "appear directly in this bot."
-    )
-
-
-def free_channel_text():
-    username = (
-        FREE_CHANNEL_USERNAME
-        or "@ASForexCrypto"
-    )
-
-    if username.startswith(
-        "@"
-    ):
-        clean_username = (
-            username[
-                1:
-            ]
-        )
-
-        channel_url = (
-            "https://t.me/"
-            f"{clean_username}"
-        )
-
-        display_name = (
-            username
-        )
-
-    elif username.startswith(
-        "https://"
-    ):
-        channel_url = (
-            username
-        )
-
-        display_name = (
-            "AS | Forex & Crypto"
-        )
-
-    else:
-        channel_url = (
-            "https://t.me/"
-            "ASForexCrypto"
-        )
-
-        display_name = (
-            "@ASForexCrypto"
-        )
-
-    return (
-        "📢 <b>AS Free Channel</b>\n"
-        "\n"
-        "Market analysis, news, "
-        "research updates and "
-        "transparent statistics.\n"
-        "\n"
-        f"👉 <a href=\"{channel_url}\">"
-        f"Open {display_name}</a>"
-    )
-
-
-def about_text():
-    return (
-        "ℹ️ <b>About AS</b>\n"
-        "\n"
-        "<b>AS | Forex & Crypto</b> "
-        "is being developed as a "
-        "data-driven market analysis "
-        "and trading signal service.\n"
-        "\n"
-        "Our focus:\n"
-        "• clear Entry / SL / TP\n"
-        "• transparent results\n"
-        "• losses are not hidden\n"
-        "• no guaranteed profits\n"
-        "• strategy testing before launch\n"
-        "\n"
-        "All market times are shown "
-        "in <b>UTC</b>."
-    )
-
-
-def help_text():
-    return (
-        "❓ <b>Help</b>\n"
-        "\n"
-        "You can use the buttons "
-        "at the bottom of the chat.\n"
-        "\n"
-        "📊 <b>My Status</b> — "
-        "your current subscription\n"
-        "\n"
-        "⭐ <b>VIP</b> — "
-        "VIP information\n"
-        "\n"
-        "📢 <b>Free Channel</b> — "
-        "open the public channel\n"
-        "\n"
-        "ℹ️ <b>About</b> — "
-        "information about AS\n"
-        "\n"
-        "You can also use:\n"
-        "/start\n"
-        "/status\n"
-        "/vip\n"
-        "/channel\n"
-        "/about\n"
-        "/help"
-    )
-
-
-def unknown_text():
-    return (
-        "I don't recognize that option.\n"
-        "\n"
-        "Please use the buttons below."
-    )
-
-
-def register_message_user(
-    message
-):
-    user_data = (
-        message.get(
-            "from"
-        )
-        or {}
-    )
-
-    telegram_user_id = (
-        user_data.get(
-            "id"
-        )
-    )
-
-    if telegram_user_id is None:
-        return None
-
-    return register_or_update_user(
-        telegram_user_id=(
-            telegram_user_id
-        ),
-
-        username=(
-            user_data.get(
-                "username"
-            )
-        ),
-
-        first_name=(
-            user_data.get(
-                "first_name"
-            )
-        ),
-
-        last_name=(
-            user_data.get(
-                "last_name"
-            )
-        ),
-    )
-
+# ============================================================
+# MESSAGE HANDLER
+# ============================================================
 
 def normalize_command(
     text
@@ -631,15 +1275,6 @@ def normalize_command(
         )
 
     return first_part
-
-
-def normalize_button_text(
-    text
-):
-    if not text:
-        return ""
-
-    return text.strip()
 
 
 def process_private_message(
@@ -685,14 +1320,16 @@ def process_private_message(
     ):
         return
 
-    user = (
-        register_message_user(
-            message
-        )
+    user = register_telegram_user(
+        telegram_user
     )
 
     if user is None:
         return
+
+    language = get_language(
+        telegram_user
+    )
 
     text = (
         message.get(
@@ -701,25 +1338,15 @@ def process_private_message(
         or ""
     )
 
-    command = (
-        normalize_command(
-            text
-        )
-    )
-
-    button_text = (
-        normalize_button_text(
-            text
-        )
+    command = normalize_command(
+        text
     )
 
     if command == "/start":
-        send_private_message(
-            chat_id,
-            start_text(
-                telegram_user.get(
-                    "first_name"
-                )
+        send_start_screen(
+            chat_id=chat_id,
+            telegram_user=(
+                telegram_user
             ),
         )
 
@@ -749,14 +1376,19 @@ def process_private_message(
 
         return
 
-    if (
-        command == "/status"
-        or button_text == BUTTON_STATUS
-    ):
-        send_private_message(
-            chat_id,
-            status_text(
-                telegram_user_id
+    if command == "/status":
+        send_inline_message(
+            chat_id=chat_id,
+
+            text=status_text(
+                telegram_user_id,
+                language,
+            ),
+
+            reply_markup=(
+                back_to_menu_keyboard(
+                    language
+                )
             ),
         )
 
@@ -770,13 +1402,19 @@ def process_private_message(
 
         return
 
-    if (
-        command == "/vip"
-        or button_text == BUTTON_VIP
-    ):
-        send_private_message(
-            chat_id,
-            vip_text(),
+    if command == "/vip":
+        send_inline_message(
+            chat_id=chat_id,
+
+            text=vip_text(
+                language
+            ),
+
+            reply_markup=(
+                back_to_menu_keyboard(
+                    language
+                )
+            ),
         )
 
         print(
@@ -789,69 +1427,338 @@ def process_private_message(
 
         return
 
+    if command == "/channel":
+        send_inline_message(
+            chat_id=chat_id,
+
+            text=channel_text(
+                language
+            ),
+
+            reply_markup=(
+                channel_keyboard(
+                    language
+                )
+            ),
+        )
+
+        return
+
+    if command == "/about":
+        send_inline_message(
+            chat_id=chat_id,
+
+            text=about_text(
+                language
+            ),
+
+            reply_markup=(
+                back_to_menu_keyboard(
+                    language
+                )
+            ),
+        )
+
+        return
+
+    if command == "/help":
+        send_inline_message(
+            chat_id=chat_id,
+
+            text=help_text(
+                language
+            ),
+
+            reply_markup=(
+                back_to_menu_keyboard(
+                    language
+                )
+            ),
+        )
+
+        return
+
+    send_inline_message(
+        chat_id=chat_id,
+
+        text=unknown_text(
+            language
+        ),
+
+        reply_markup=(
+            main_menu_keyboard(
+                language
+            )
+        ),
+    )
+
+
+# ============================================================
+# CALLBACK HANDLER
+# ============================================================
+
+def process_callback_query(
+    callback_query
+):
+    callback_query_id = (
+        callback_query.get(
+            "id"
+        )
+    )
+
+    telegram_user = (
+        callback_query.get(
+            "from"
+        )
+        or {}
+    )
+
+    message = (
+        callback_query.get(
+            "message"
+        )
+        or {}
+    )
+
+    chat = (
+        message.get(
+            "chat"
+        )
+        or {}
+    )
+
     if (
-        command == "/channel"
-        or button_text == BUTTON_FREE
+        chat.get(
+            "type"
+        )
+        != "private"
     ):
-        send_private_message(
-            chat_id,
-            free_channel_text(),
+        answer_callback_query(
+            callback_query_id
+        )
+
+        return
+
+    chat_id = (
+        chat.get(
+            "id"
+        )
+    )
+
+    message_id = (
+        message.get(
+            "message_id"
+        )
+    )
+
+    telegram_user_id = (
+        telegram_user.get(
+            "id"
+        )
+    )
+
+    if (
+        chat_id is None
+        or message_id is None
+        or telegram_user_id is None
+    ):
+        answer_callback_query(
+            callback_query_id
+        )
+
+        return
+
+    user = register_telegram_user(
+        telegram_user
+    )
+
+    language = get_language(
+        telegram_user
+    )
+
+    data = (
+        callback_query.get(
+            "data"
+        )
+        or ""
+    )
+
+    answer_callback_query(
+        callback_query_id
+    )
+
+    if data == CALLBACK_MENU:
+        edit_inline_message(
+            chat_id=chat_id,
+
+            message_id=message_id,
+
+            text=main_menu_text(
+                language
+            ),
+
+            reply_markup=(
+                main_menu_keyboard(
+                    language
+                )
+            ),
         )
 
         print(
             "USER BOT | "
-            "FREE CHANNEL | "
+            "MENU | "
             f"UserDB="
-            f"{user['id']}",
+            f"{user['id'] if user else 'n/a'}",
             flush=True,
         )
 
         return
 
-    if (
-        command == "/about"
-        or button_text == BUTTON_ABOUT
-    ):
-        send_private_message(
-            chat_id,
-            about_text(),
+    if data == CALLBACK_STATUS:
+        edit_inline_message(
+            chat_id=chat_id,
+
+            message_id=message_id,
+
+            text=status_text(
+                telegram_user_id,
+                language,
+            ),
+
+            reply_markup=(
+                back_to_menu_keyboard(
+                    language
+                )
+            ),
+        )
+
+        print(
+            "USER BOT | "
+            "STATUS | "
+            f"UserDB="
+            f"{user['id'] if user else 'n/a'}",
+            flush=True,
         )
 
         return
 
-    if (
-        command == "/help"
-        or button_text == BUTTON_HELP
-    ):
-        send_private_message(
-            chat_id,
-            help_text(),
+    if data == CALLBACK_VIP:
+        edit_inline_message(
+            chat_id=chat_id,
+
+            message_id=message_id,
+
+            text=vip_text(
+                language
+            ),
+
+            reply_markup=(
+                back_to_menu_keyboard(
+                    language
+                )
+            ),
+        )
+
+        print(
+            "USER BOT | "
+            "VIP | "
+            f"UserDB="
+            f"{user['id'] if user else 'n/a'}",
+            flush=True,
         )
 
         return
 
-    send_private_message(
-        chat_id,
-        unknown_text(),
+    if data == CALLBACK_ABOUT:
+        edit_inline_message(
+            chat_id=chat_id,
+
+            message_id=message_id,
+
+            text=about_text(
+                language
+            ),
+
+            reply_markup=(
+                back_to_menu_keyboard(
+                    language
+                )
+            ),
+        )
+
+        return
+
+    if data == CALLBACK_HELP:
+        edit_inline_message(
+            chat_id=chat_id,
+
+            message_id=message_id,
+
+            text=help_text(
+                language
+            ),
+
+            reply_markup=(
+                back_to_menu_keyboard(
+                    language
+                )
+            ),
+        )
+
+        return
+
+    edit_inline_message(
+        chat_id=chat_id,
+
+        message_id=message_id,
+
+        text=main_menu_text(
+            language
+        ),
+
+        reply_markup=(
+            main_menu_keyboard(
+                language
+            )
+        ),
     )
 
+
+# ============================================================
+# UPDATE HANDLER
+# ============================================================
 
 def process_update(
     update
 ):
+    callback_query = (
+        update.get(
+            "callback_query"
+        )
+    )
+
+    if callback_query is not None:
+        process_callback_query(
+            callback_query
+        )
+
+        return
+
     message = (
         update.get(
             "message"
         )
     )
 
-    if message is None:
-        return
+    if message is not None:
+        process_private_message(
+            message
+        )
 
-    process_private_message(
-        message
-    )
 
+# ============================================================
+# POLLING
+# ============================================================
 
 def fetch_updates(
     offset=None,
@@ -863,6 +1770,7 @@ def fetch_updates(
         "allowed_updates":
             [
                 "message",
+                "callback_query",
             ],
     }
 
@@ -892,6 +1800,7 @@ def polling_loop():
 
     if last_update_id is None:
         offset = None
+
     else:
         offset = (
             last_update_id
@@ -905,10 +1814,8 @@ def polling_loop():
 
     while True:
         try:
-            result = (
-                fetch_updates(
-                    offset=offset
-                )
+            result = fetch_updates(
+                offset=offset
             )
 
             if result is None:
@@ -960,8 +1867,7 @@ def polling_loop():
         except Exception as error:
             print(
                 "USER BOT LOOP ERROR | "
-                f"{type(error).__name__}: "
-                f"{error}",
+                f"{type(error).__name__}",
                 flush=True,
             )
 
