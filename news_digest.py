@@ -64,6 +64,12 @@ SEND_WINDOW_MINUTES = 90
 SOURCE_RETRY_SECONDS = 20 * 60
 
 
+# A 429 response means the source
+# is rate limiting us. Wait longer
+# before trying the same digest again.
+RATE_LIMIT_RETRY_SECONDS = 30 * 60
+
+
 # Search the previous 8 hours.
 NEWS_TIMESPAN = "8h"
 
@@ -73,7 +79,11 @@ MAX_ARTICLES_PER_CATEGORY = 3
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
-FOREX_QUERY = (
+# One combined request is used for
+# both Forex and Crypto. This halves
+# GDELT request volume compared with
+# making two separate requests.
+MARKET_QUERY = (
     "("
     "forex "
     'OR "Federal Reserve" '
@@ -85,15 +95,8 @@ FOREX_QUERY = (
     "OR dollar "
     "OR pound "
     "OR inflation "
-    'OR "interest rates"'
-    ") "
-    "sourcelang:english"
-)
-
-
-CRYPTO_QUERY = (
-    "("
-    "bitcoin "
+    'OR "interest rates" '
+    "OR bitcoin "
     "OR ethereum "
     "OR cryptocurrency "
     "OR crypto "
@@ -199,7 +202,21 @@ CRYPTO_KEYWORDS = {
 }
 
 
-_last_source_attempt = {}
+_source_retry_until = {}
+
+
+class GDELTRateLimitError(RuntimeError):
+    def __init__(
+        self,
+        retry_after_seconds=None,
+    ):
+        super().__init__(
+            "GDELT rate limit reached"
+        )
+
+        self.retry_after_seconds = (
+            retry_after_seconds
+        )
 
 
 def get_connection():
@@ -465,6 +482,29 @@ def parse_seen_date(
     return None
 
 
+def get_retry_after_seconds(
+    response
+):
+    value = response.headers.get(
+        "Retry-After"
+    )
+
+    if not value:
+        return None
+
+    try:
+        return max(
+            int(value),
+            0,
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
+
+
 def fetch_gdelt_articles(
     query
 ):
@@ -486,6 +526,15 @@ def fetch_gdelt_articles(
                 "AS-Forex-Crypto-News/1.0"
         },
     )
+
+    if response.status_code == 429:
+        raise GDELTRateLimitError(
+            retry_after_seconds=(
+                get_retry_after_seconds(
+                    response
+                )
+            )
+        )
 
     response.raise_for_status()
 
@@ -973,33 +1022,62 @@ def get_due_slot(
 def source_retry_allowed(
     slot_key
 ):
-    previous_attempt = (
-        _last_source_attempt.get(
-            slot_key
-        )
-    )
-
     now_monotonic = (
         time.monotonic()
     )
 
-    if previous_attempt is not None:
-        elapsed = (
-            now_monotonic
-            - previous_attempt
+    retry_until = (
+        _source_retry_until.get(
+            slot_key,
+            0.0,
         )
+    )
 
-        if (
-            elapsed
-            < SOURCE_RETRY_SECONDS
-        ):
-            return False
+    if (
+        now_monotonic
+        < retry_until
+    ):
+        return False
 
-    _last_source_attempt[
+    # Default cooldown after an
+    # attempt. If a 429 is received,
+    # this deadline is extended below.
+    _source_retry_until[
         slot_key
-    ] = now_monotonic
+    ] = (
+        now_monotonic
+        + SOURCE_RETRY_SECONDS
+    )
 
     return True
+
+
+def defer_source_retry(
+    slot_key,
+    delay_seconds,
+):
+    now_monotonic = (
+        time.monotonic()
+    )
+
+    requested_deadline = (
+        now_monotonic
+        + delay_seconds
+    )
+
+    current_deadline = (
+        _source_retry_until.get(
+            slot_key,
+            0.0,
+        )
+    )
+
+    _source_retry_until[
+        slot_key
+    ] = max(
+        current_deadline,
+        requested_deadline,
+    )
 
 
 def process_news_digest():
@@ -1026,23 +1104,48 @@ def process_news_digest():
         return False
 
     try:
-        forex_raw = (
+        market_raw = (
             fetch_gdelt_articles(
-                FOREX_QUERY
+                MARKET_QUERY
             )
         )
 
-        crypto_raw = (
-            fetch_gdelt_articles(
-                CRYPTO_QUERY
-            )
+    except GDELTRateLimitError as error:
+        retry_after_seconds = (
+            error.retry_after_seconds
+            or 0
         )
+
+        delay_seconds = max(
+            RATE_LIMIT_RETRY_SECONDS,
+            retry_after_seconds,
+        )
+
+        defer_source_retry(
+            slot_key,
+            delay_seconds,
+        )
+
+        retry_minutes = (
+            delay_seconds
+            // 60
+        )
+
+        print(
+            "NEWS DIGEST RATE LIMITED | "
+            f"Slot={slot_key} | "
+            f"Retry in {retry_minutes}m",
+            flush=True,
+        )
+
+        return False
 
     except Exception as error:
         print(
             "NEWS DIGEST SOURCE ERROR | "
             f"{type(error).__name__}: "
-            f"{error}",
+            f"{error} | "
+            "Retry scheduled",
             flush=True,
         )
 
@@ -1051,7 +1154,7 @@ def process_news_digest():
     forex_articles = (
         select_articles(
             raw_articles=
-                forex_raw,
+                market_raw,
 
             keywords=
                 FOREX_KEYWORDS,
@@ -1064,7 +1167,7 @@ def process_news_digest():
     crypto_articles = (
         select_articles(
             raw_articles=
-                crypto_raw,
+                market_raw,
 
             keywords=
                 CRYPTO_KEYWORDS,
