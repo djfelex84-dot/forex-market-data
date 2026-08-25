@@ -65,6 +65,11 @@ from economic_calendar import (
     process_economic_calendar,
 )
 
+from news_digest import (
+    init_news_digest_tables,
+    process_news_digest,
+)
+
 
 CANDLE_CLOSE_DELAY_SECONDS = 15
 
@@ -715,6 +720,17 @@ def analyze_once():
             flush=True,
         )
 
+    try:
+        process_news_digest()
+
+    except Exception as error:
+        print(
+            "NEWS DIGEST ERROR | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
 
 def seconds_until_next_check():
     now = time.time()
@@ -749,6 +765,8 @@ def main():
     init_market_overview_table()
 
     init_economic_calendar()
+
+    init_news_digest_tables()
 
     print(
         "Multi-market analysis engine started",
@@ -815,6 +833,13 @@ def main():
     print(
         "Economic calendar: "
         "High Impact -> "
+        "Free channel",
+        flush=True,
+    )
+
+    print(
+        "News digest: "
+        "10:30 & 16:30 UTC -> "
         "Free channel",
         flush=True,
     )
