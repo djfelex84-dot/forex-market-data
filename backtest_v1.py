@@ -7,6 +7,8 @@ from datetime import (
     timezone,
 )
 
+from zoneinfo import ZoneInfo
+
 from config import (
     TWELVE_DATA_API_KEY,
     SYMBOLS,
@@ -29,6 +31,10 @@ API_URL = (
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 HISTORICAL_CANDLE_LIMIT = 5000
+
+NEW_YORK_TIMEZONE = ZoneInfo(
+    "America/New_York"
+)
 
 
 def interval_to_timedelta(interval):
@@ -69,7 +75,96 @@ INTERVAL_DELTA = (
 )
 
 
-def fetch_historical_candles(symbol):
+def parse_utc_datetime(value):
+    return datetime.strptime(
+        value,
+        TIME_FORMAT,
+    ).replace(
+        tzinfo=timezone.utc
+    )
+
+
+def is_forex_session_open(
+    candle_datetime,
+):
+    utc_time = (
+        parse_utc_datetime(
+            candle_datetime
+        )
+    )
+
+    new_york_time = (
+        utc_time.astimezone(
+            NEW_YORK_TIMEZONE
+        )
+    )
+
+    weekday = (
+        new_york_time.weekday()
+    )
+
+    hour_minute = (
+        new_york_time.hour,
+        new_york_time.minute,
+    )
+
+    # Saturday:
+    # Forex session is closed.
+    if weekday == 5:
+        return False
+
+    # Sunday:
+    # Forex session opens at
+    # 17:00 New York time.
+    if weekday == 6:
+        return (
+            hour_minute
+            >= (17, 0)
+        )
+
+    # Friday:
+    # Forex session closes at
+    # 17:00 New York time.
+    if weekday == 4:
+        return (
+            hour_minute
+            < (17, 0)
+        )
+
+    # Monday through Thursday:
+    # Session is open all day.
+    return True
+
+
+def is_market_session_open(
+    symbol,
+    candle_datetime,
+):
+    instrument = (
+        get_instrument_config(
+            symbol
+        )
+    )
+
+    market = instrument.get(
+        "market"
+    )
+
+    if market == "FOREX":
+        return (
+            is_forex_session_open(
+                candle_datetime
+            )
+        )
+
+    # Future non-Forex markets
+    # are not filtered here yet.
+    return True
+
+
+def fetch_historical_candles(
+    symbol,
+):
     if not TWELVE_DATA_API_KEY:
         raise RuntimeError(
             "TWELVE_DATA_API_KEY "
@@ -116,15 +211,15 @@ def fetch_historical_candles(symbol):
         timezone.utc
     )
 
+    raw_closed_count = 0
+    session_excluded_count = 0
+
     candles = []
 
     for candle in values:
         candle_open = (
-            datetime.strptime(
-                candle["datetime"],
-                TIME_FORMAT,
-            ).replace(
-                tzinfo=timezone.utc
+            parse_utc_datetime(
+                candle["datetime"]
             )
         )
 
@@ -133,7 +228,26 @@ def fetch_historical_candles(symbol):
             + INTERVAL_DELTA
         )
 
+        # Never use an unfinished candle.
         if candle_close > now:
+            continue
+
+        raw_closed_count += 1
+
+        # Twelve Data Forex can provide
+        # weekend candles.
+        #
+        # For this backtest we keep only
+        # the normal retail Forex session:
+        #
+        # Sunday 17:00 New York
+        # through
+        # Friday 17:00 New York.
+        if not is_market_session_open(
+            symbol,
+            candle["datetime"],
+        ):
+            session_excluded_count += 1
             continue
 
         candles.append(
@@ -159,15 +273,23 @@ def fetch_historical_candles(symbol):
             }
         )
 
+    # Twelve Data returns newest first.
+    # Strategy indicators require
+    # oldest -> newest.
     candles.reverse()
 
     if len(candles) < CANDLE_LIMIT:
         raise RuntimeError(
-            f"Not enough candles for "
-            f"{symbol}: {len(candles)}"
+            f"Not enough session candles "
+            f"for {symbol}: "
+            f"{len(candles)}"
         )
 
-    return candles
+    return (
+        candles,
+        raw_closed_count,
+        session_excluded_count,
+    )
 
 
 def is_new_signal(
@@ -191,12 +313,41 @@ def is_new_signal(
 
     if (
         previous_result["status"]
-        == "VALID"
-        and previous_result[
-            "signal"
-        ]
-        == current_result["signal"]
+        != "VALID"
+        or previous_result["signal"]
+        != current_result["signal"]
     ):
+        return True
+
+    current_time = (
+        parse_utc_datetime(
+            current_result[
+                "datetime"
+            ]
+        )
+    )
+
+    previous_time = (
+        parse_utc_datetime(
+            previous_result[
+                "datetime"
+            ]
+        )
+    )
+
+    actual_gap = (
+        current_time
+        - previous_time
+    )
+
+    # Match the live signal-event logic:
+    # same-direction VALID signals are
+    # continuations only when candles
+    # are directly consecutive.
+    #
+    # A weekend/session gap starts a
+    # fresh signal sequence.
+    if actual_gap == INTERVAL_DELTA:
         return False
 
     return True
@@ -280,16 +431,10 @@ def build_trade(
             - reward_distance
         )
 
-    max_future_candles = int(
-        MAX_TRADE_MINUTES
-        / INTERVAL_DELTA.total_seconds()
-        * 60
-    )
-
-    final_index = min(
-        entry_index
-        + max_future_candles,
-        len(candles) - 1,
+    entry_time = (
+        parse_utc_datetime(
+            result["datetime"]
+        )
     )
 
     exit_reason = None
@@ -298,11 +443,25 @@ def build_trade(
 
     for future_index in range(
         entry_index + 1,
-        final_index + 1,
+        len(candles),
     ):
         candle = candles[
             future_index
         ]
+
+        future_time = (
+            parse_utc_datetime(
+                candle["datetime"]
+            )
+        )
+
+        elapsed_minutes = (
+            (
+                future_time
+                - entry_time
+            ).total_seconds()
+            / 60
+        )
 
         if signal == "BUY":
             sl_hit = (
@@ -349,18 +508,27 @@ def build_trade(
             exit_index = future_index
             break
 
-    if exit_reason is None:
+        # Match the live model:
+        # the trade may last no more
+        # than MAX_TRADE_MINUTES.
+        #
+        # Using real elapsed time is
+        # important across weekend gaps.
         if (
-            final_index
-            <= entry_index
+            elapsed_minutes
+            >= MAX_TRADE_MINUTES
         ):
-            return None
+            exit_reason = (
+                "TIMEOUT"
+            )
+            exit_price = (
+                candle["close"]
+            )
+            exit_index = future_index
+            break
 
-        exit_reason = "TIMEOUT"
-        exit_index = final_index
-        exit_price = candles[
-            final_index
-        ]["close"]
+    if exit_reason is None:
+        return None
 
     if exit_reason == "AMBIGUOUS":
         net_pnl_pips = None
@@ -488,7 +656,7 @@ def parse_time(value):
 
 
 def apply_one_open_per_symbol(
-    trades
+    trades,
 ):
     selected = []
     open_until = {}
@@ -777,6 +945,11 @@ def main():
         f"{HISTORICAL_CANDLE_LIMIT}"
     )
     print(
+        "Forex session: "
+        "Sun 17:00 -> Fri 17:00 "
+        "America/New_York"
+    )
+    print(
         "Live bot / Telegram / SQLite "
         "are NOT modified."
     )
@@ -788,16 +961,23 @@ def main():
             f"{symbol}"
         )
 
-        candles = (
-            fetch_historical_candles(
-                symbol
-            )
+        (
+            candles,
+            raw_closed_count,
+            session_excluded_count,
+        ) = fetch_historical_candles(
+            symbol
         )
 
         print(
             "DATA | "
             f"{symbol} | "
-            f"Candles={len(candles)} | "
+            f"RawClosed="
+            f"{raw_closed_count} | "
+            f"SessionCandles="
+            f"{len(candles)} | "
+            f"Excluded="
+            f"{session_excluded_count} | "
             f"From="
             f"{candles[0]['datetime']} | "
             f"To="
