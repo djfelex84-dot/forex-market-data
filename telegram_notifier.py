@@ -53,10 +53,6 @@ SEND_PHOTO_URL = (
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
-# ============================================================
-# DATABASE
-# ============================================================
-
 def get_connection():
     connection = sqlite3.connect(
         DB_PATH
@@ -68,10 +64,6 @@ def get_connection():
 
     return connection
 
-
-# ============================================================
-# INTERVAL
-# ============================================================
 
 def interval_minutes(
     interval
@@ -107,10 +99,6 @@ def interval_minutes(
         f"{interval}"
     )
 
-
-# ============================================================
-# TELEGRAM SEND
-# ============================================================
 
 def send_message_to_channel(
     channel_id,
@@ -148,39 +136,20 @@ def send_message_to_channel(
             timeout=15,
         )
 
-    except requests.exceptions.RequestException as error:
-        print(
-            "TELEGRAM MESSAGE ERROR | "
-            f"{channel_id} | "
-            f"{type(error).__name__}",
-            flush=True,
-        )
+        response.raise_for_status()
 
-        return False
+        return True
 
     except Exception as error:
         print(
             "TELEGRAM MESSAGE ERROR | "
             f"{channel_id} | "
-            f"{type(error).__name__}",
+            f"{type(error).__name__}: "
+            f"{error}",
             flush=True,
         )
 
         return False
-
-    if response.status_code >= 400:
-        print(
-            "TELEGRAM MESSAGE ERROR | "
-            f"{channel_id} | "
-            f"HTTP "
-            f"{response.status_code} "
-            f"{response.reason}",
-            flush=True,
-        )
-
-        return False
-
-    return True
 
 
 def send_photo_to_channel(
@@ -222,56 +191,34 @@ def send_photo_to_channel(
                     "HTML",
             },
             files={
-                "photo": (
-                    "trade_signal.png",
-                    image_buffer,
-                    "image/png",
-                )
+                "photo":
+                    (
+                        "trade_signal.png",
+                        image_buffer,
+                        "image/png",
+                    )
             },
             timeout=30,
         )
 
-    except requests.exceptions.RequestException as error:
-        print(
-            "TELEGRAM PHOTO ERROR | "
-            f"{channel_id} | "
-            f"{type(error).__name__}",
-            flush=True,
-        )
+        response.raise_for_status()
 
-        return False
+        return True
 
     except Exception as error:
         print(
             "TELEGRAM PHOTO ERROR | "
             f"{channel_id} | "
-            f"{type(error).__name__}",
+            f"{type(error).__name__}: "
+            f"{error}",
             flush=True,
         )
 
         return False
 
-    if response.status_code >= 400:
-        print(
-            "TELEGRAM PHOTO ERROR | "
-            f"{channel_id} | "
-            f"HTTP "
-            f"{response.status_code} "
-            f"{response.reason}",
-            flush=True,
-        )
-
-        return False
-
-    return True
-
-
-# ============================================================
-# SIMPLE SEND HELPERS
-# ============================================================
 
 def send_message(
-    text,
+    text
 ):
     return send_message_to_channel(
         CHANNEL_ID,
@@ -280,7 +227,7 @@ def send_message(
 
 
 def send_vip_message(
-    text,
+    text
 ):
     return send_message_to_channel(
         VIP_CHANNEL_ID,
@@ -310,10 +257,6 @@ def send_vip_photo(
     )
 
 
-# ============================================================
-# DISPLAY HELPERS
-# ============================================================
-
 def direction_icon(
     signal
 ):
@@ -336,12 +279,9 @@ def get_signal_time(
     if not candle_time:
         return "n/a"
 
-    interval = (
-        trade.get(
-            "interval"
-        )
-        or INTERVAL
-    )
+    interval = trade.get(
+        "interval"
+    ) or INTERVAL
 
     try:
         candle_open = (
@@ -380,19 +320,11 @@ def get_result_confirmed_time(
     )
 
     if not candle_time:
-        candle_time = trade.get(
-            "exit_candle_time"
-        )
-
-    if not candle_time:
         return "n/a"
 
-    interval = (
-        trade.get(
-            "interval"
-        )
-        or INTERVAL
-    )
+    interval = trade.get(
+        "interval"
+    ) or INTERVAL
 
     try:
         candle_open = (
@@ -467,10 +399,6 @@ def get_max_trade_time_text(
     )
 
 
-# ============================================================
-# ORIGINAL TRADE LOOKUP
-# ============================================================
-
 def get_original_trade(
     trade_id
 ):
@@ -526,118 +454,13 @@ def get_original_trade(
         print(
             "TELEGRAM TRADE LOOKUP ERROR | "
             f"TradeID={trade_id} | "
-            f"{type(error).__name__}",
+            f"{type(error).__name__}: "
+            f"{error}",
             flush=True,
         )
 
         return None
 
-
-# ============================================================
-# SIGNAL ID
-# ============================================================
-
-def clean_symbol_for_id(
-    symbol
-):
-    value = (
-        symbol
-        or "UNKNOWN"
-    ).upper()
-
-    return "".join(
-        character
-        for character in value
-        if character.isalnum()
-    )
-
-
-def get_signal_id(
-    trade
-):
-    if trade is None:
-        return "AS-UNKNOWN"
-
-    symbol = clean_symbol_for_id(
-        trade.get(
-            "symbol"
-        )
-    )
-
-    signal_event_id = (
-        trade.get(
-            "signal_event_id"
-        )
-    )
-
-    if signal_event_id is not None:
-        return (
-            f"AS-{symbol}-"
-            f"{signal_event_id}"
-        )
-
-    trade_id = (
-        trade.get(
-            "id"
-        )
-        or trade.get(
-            "trade_id"
-        )
-    )
-
-    if trade_id is not None:
-        return (
-            f"AS-{symbol}-T"
-            f"{trade_id}"
-        )
-
-    candle_time = trade.get(
-        "entry_candle_time"
-    )
-
-    if candle_time:
-        try:
-            candle_open = (
-                datetime.strptime(
-                    candle_time,
-                    TIME_FORMAT,
-                )
-            )
-
-            interval = (
-                trade.get(
-                    "interval"
-                )
-                or INTERVAL
-            )
-
-            signal_time = (
-                candle_open
-                + timedelta(
-                    minutes=(
-                        interval_minutes(
-                            interval
-                        )
-                    )
-                )
-            )
-
-            return (
-                f"AS-{symbol}-"
-                f"{signal_time.strftime('%Y%m%d-%H%M')}"
-            )
-
-        except Exception:
-            pass
-
-    return (
-        f"AS-{symbol}-UNKNOWN"
-    )
-
-
-# ============================================================
-# OPEN TRADE TEXT
-# ============================================================
 
 def build_trade_opened_text(
     trade,
@@ -689,18 +512,12 @@ def build_trade_opened_text(
         )
     )
 
-    signal_id = get_signal_id(
-        trade
-    )
-
     text = (
         f"{icon} "
         f"<b>{trade['symbol']} · "
         f"{signal}</b>\n"
         "\n"
         "✅ <b>SIGNAL ACTIVE</b>\n"
-        "🆔 Signal ID: "
-        f"<code>{signal_id}</code>\n"
         "\n"
         "🎯 Entry: "
         f"<code>{trade['entry']:.5f}</code>\n"
@@ -711,9 +528,9 @@ def build_trade_opened_text(
         "\n"
         "⚖️ Risk: "
         f"<b>{risk_pips:.1f} pips</b>\n"
-        "🏆 Reward: "
+        "💰 Reward: "
         f"<b>{reward_pips:.1f} pips</b>\n"
-        "📊 R:R: "
+        "📐 R:R: "
         f"<b>1:{reward_ratio:.2f}</b>\n"
         "⏱ Timeframe: "
         f"<b>{interval}</b>\n"
@@ -721,6 +538,384 @@ def build_trade_opened_text(
         f"<b>{max_trade_time}</b>\n"
         "\n"
         "🕒 Signal time: "
-        f"<b>{signal_time}</b>\n"
+        f"<b>{signal_time}</b>"
+    )
+
+    if test_mode:
+        text += (
+            "\n\n"
+            "<i>Test signal · "
+            "simulated execution</i>"
+        )
+
+    return text
+
+
+def result_header(
+    result
+):
+    if result == "TAKE_PROFIT":
+        return (
+            "🏁 <b>TAKE PROFIT</b>"
+        )
+
+    if result == "STOP_LOSS":
+        return (
+            "🛑 <b>STOP LOSS</b>"
+        )
+
+    if result == "TIMEOUT":
+        return (
+            "⏱ <b>TIME EXIT</b>"
+        )
+
+    if result == "AMBIGUOUS":
+        return (
+            "⚠️ <b>AMBIGUOUS RESULT</b>"
+        )
+
+    return (
+        f"📊 <b>{result}</b>"
+    )
+
+
+def result_pnl_icon(
+    net_pips
+):
+    if net_pips is None:
+        return "⚪"
+
+    if float(
+        net_pips
+    ) > 0:
+        return "🟢"
+
+    if float(
+        net_pips
+    ) < 0:
+        return "🔴"
+
+    return "⚪"
+
+
+def build_trade_closed_text(
+    trade,
+    test_mode=False,
+):
+    trade_id = trade.get(
+        "trade_id"
+    )
+
+    original = (
+        get_original_trade(
+            trade_id
+        )
+    )
+
+    symbol = trade.get(
+        "symbol"
+    )
+
+    signal = trade.get(
+        "signal"
+    )
+
+    interval = (
+        trade.get(
+            "interval"
+        )
+        or INTERVAL
+    )
+
+    entry_price = None
+    signal_time = "n/a"
+
+    if original is not None:
+        symbol = (
+            original.get(
+                "symbol"
+            )
+            or symbol
+        )
+
+        signal = (
+            original.get(
+                "signal"
+            )
+            or signal
+        )
+
+        interval = (
+            original.get(
+                "interval"
+            )
+            or interval
+        )
+
+        entry_price = (
+            original.get(
+                "entry_price"
+            )
+        )
+
+        signal_time = (
+            get_signal_time(
+                original
+            )
+        )
+
+    if symbol is None:
+        symbol = "UNKNOWN"
+
+    if signal is None:
+        signal = "UNKNOWN"
+
+    result = trade.get(
+        "result",
+        "UNKNOWN",
+    )
+
+    result_confirmed = (
+        get_result_confirmed_time(
+            {
+                **trade,
+                "interval":
+                    interval,
+            }
+        )
+    )
+
+    icon = direction_icon(
+        signal
+    )
+
+    text = (
+        f"{result_header(result)}\n"
         "\n"
-        "
+        f"{icon} "
+        f"<b>{symbol} · "
+        f"{signal}</b>\n"
+    )
+
+    if entry_price is not None:
+        text += (
+            "\n"
+            "🎯 Entry: "
+            f"<code>{float(entry_price):.5f}</code>\n"
+            "⏱ Timeframe: "
+            f"<b>{interval}</b>\n"
+            "🕒 Signal time: "
+            f"<b>{signal_time}</b>\n"
+        )
+
+    if result == "AMBIGUOUS":
+        text += (
+            "\n"
+            "⚠️ Both Stop Loss and "
+            "Take Profit were touched "
+            "inside the same candle.\n"
+            "\n"
+            "The exact order cannot be "
+            "determined from OHLC data."
+        )
+
+    else:
+        net_pips = trade.get(
+            "net_pips"
+        )
+
+        r_value = trade.get(
+            "r"
+        )
+
+        pnl_icon = (
+            result_pnl_icon(
+                net_pips
+            )
+        )
+
+        if net_pips is not None:
+            text += (
+                "\n"
+                f"{pnl_icon} "
+                "Net result: "
+                f"<b>{float(net_pips):+.2f} "
+                "pips</b>"
+            )
+
+        if r_value is not None:
+            text += (
+                "\n"
+                "📊 Result: "
+                f"<b>{float(r_value):+.2f}R</b>"
+            )
+
+    text += (
+        "\n\n"
+        "🕒 Result confirmed: "
+        f"<b>{result_confirmed}</b>"
+    )
+
+    if (
+        test_mode
+        and trade_id is not None
+    ):
+        text += (
+            "\n"
+            "🧪 Trade ID: "
+            f"<code>{trade_id}</code>"
+        )
+
+    if test_mode:
+        text += (
+            "\n\n"
+            "<i>Test signal · "
+            "simulated execution</i>"
+        )
+
+    return text
+
+
+def send_trade_opened(
+    trade,
+    candles,
+):
+    test_text = (
+        build_trade_opened_text(
+            trade,
+            test_mode=True,
+        )
+    )
+
+    vip_text = (
+        build_trade_opened_text(
+            trade,
+            test_mode=False,
+        )
+    )
+
+    image_buffer = None
+
+    try:
+        image_buffer = (
+            create_trade_chart(
+                candles=candles,
+                trade=trade,
+                symbol=trade[
+                    "symbol"
+                ],
+            )
+        )
+
+    except Exception as error:
+        print(
+            "TRADE CHART ERROR | "
+            f"{trade['symbol']} | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+    if image_buffer is not None:
+        test_sent = (
+            send_photo_to_channel(
+                CHANNEL_ID,
+                test_text,
+                image_buffer,
+            )
+        )
+
+    else:
+        test_sent = (
+            send_message_to_channel(
+                CHANNEL_ID,
+                test_text,
+            )
+        )
+
+    if test_sent:
+        print(
+            "SIGNAL SENT | "
+            f"{trade['symbol']} | "
+            "TEST",
+            flush=True,
+        )
+
+    if VIP_CHANNEL_ID:
+        if image_buffer is not None:
+            vip_sent = (
+                send_photo_to_channel(
+                    VIP_CHANNEL_ID,
+                    vip_text,
+                    image_buffer,
+                )
+            )
+
+        else:
+            vip_sent = (
+                send_message_to_channel(
+                    VIP_CHANNEL_ID,
+                    vip_text,
+                )
+            )
+
+        if vip_sent:
+            print(
+                "SIGNAL SENT | "
+                f"{trade['symbol']} | "
+                "VIP",
+                flush=True,
+            )
+
+    return test_sent
+
+
+def send_trade_closed(
+    trade
+):
+    test_text = (
+        build_trade_closed_text(
+            trade,
+            test_mode=True,
+        )
+    )
+
+    vip_text = (
+        build_trade_closed_text(
+            trade,
+            test_mode=False,
+        )
+    )
+
+    test_sent = (
+        send_message_to_channel(
+            CHANNEL_ID,
+            test_text,
+        )
+    )
+
+    if test_sent:
+        print(
+            "RESULT SENT | "
+            f"{trade['symbol']} | "
+            "TEST",
+            flush=True,
+        )
+
+    if VIP_CHANNEL_ID:
+        vip_sent = (
+            send_message_to_channel(
+                VIP_CHANNEL_ID,
+                vip_text,
+            )
+        )
+
+        if vip_sent:
+            print(
+                "RESULT SENT | "
+                f"{trade['symbol']} | "
+                "VIP",
+                flush=True,
+            )
+
+    return test_sent
