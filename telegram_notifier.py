@@ -140,12 +140,21 @@ def send_message_to_channel(
 
         return True
 
+    except requests.exceptions.RequestException as error:
+        print(
+            "TELEGRAM MESSAGE ERROR | "
+            f"{channel_id} | "
+            f"{type(error).__name__}",
+            flush=True,
+        )
+
+        return False
+
     except Exception as error:
         print(
             "TELEGRAM MESSAGE ERROR | "
             f"{channel_id} | "
-            f"{type(error).__name__}: "
-            f"{error}",
+            f"{type(error).__name__}",
             flush=True,
         )
 
@@ -205,12 +214,21 @@ def send_photo_to_channel(
 
         return True
 
+    except requests.exceptions.RequestException as error:
+        print(
+            "TELEGRAM PHOTO ERROR | "
+            f"{channel_id} | "
+            f"{type(error).__name__}",
+            flush=True,
+        )
+
+        return False
+
     except Exception as error:
         print(
             "TELEGRAM PHOTO ERROR | "
             f"{channel_id} | "
-            f"{type(error).__name__}: "
-            f"{error}",
+            f"{type(error).__name__}",
             flush=True,
         )
 
@@ -462,6 +480,78 @@ def get_original_trade(
         return None
 
 
+def clean_symbol_for_id(
+    symbol
+):
+    value = (
+        symbol
+        or "UNKNOWN"
+    ).upper()
+
+    return "".join(
+        character
+        for character in value
+        if character.isalnum()
+    )
+
+
+def get_signal_id(
+    trade
+):
+    if trade is None:
+        return "AS-UNKNOWN"
+
+    symbol = clean_symbol_for_id(
+        trade.get(
+            "symbol"
+        )
+    )
+
+    signal_event_id = trade.get(
+        "signal_event_id"
+    )
+
+    trade_id = (
+        trade.get(
+            "id"
+        )
+        or trade.get(
+            "trade_id"
+        )
+    )
+
+    if (
+        signal_event_id is None
+        and trade_id is not None
+    ):
+        original = get_original_trade(
+            trade_id
+        )
+
+        if original is not None:
+            signal_event_id = (
+                original.get(
+                    "signal_event_id"
+                )
+            )
+
+    if signal_event_id is not None:
+        return (
+            f"AS-{symbol}-"
+            f"{signal_event_id}"
+        )
+
+    if trade_id is not None:
+        return (
+            f"AS-{symbol}-T"
+            f"{trade_id}"
+        )
+
+    return (
+        f"AS-{symbol}-UNKNOWN"
+    )
+
+
 def build_trade_opened_text(
     trade,
     test_mode=False,
@@ -512,12 +602,18 @@ def build_trade_opened_text(
         )
     )
 
+    signal_id = get_signal_id(
+        trade
+    )
+
     text = (
         f"{icon} "
         f"<b>{trade['symbol']} · "
         f"{signal}</b>\n"
         "\n"
         "✅ <b>SIGNAL ACTIVE</b>\n"
+        "🆔 Signal ID: "
+        f"<code>{signal_id}</code>\n"
         "\n"
         "🎯 Entry: "
         f"<code>{trade['entry']:.5f}</code>\n"
@@ -538,7 +634,12 @@ def build_trade_opened_text(
         f"<b>{max_trade_time}</b>\n"
         "\n"
         "🕒 Signal time: "
-        f"<b>{signal_time}</b>"
+        f"<b>{signal_time}</b>\n"
+        "\n"
+        "📡 Market data: "
+        "<b>Twelve Data API</b>\n"
+        "⚙️ Generated automatically "
+        "by <b>AS Engine</b>"
     )
 
     if test_mode:
@@ -689,12 +790,21 @@ def build_trade_closed_text(
         signal
     )
 
+    signal_id = get_signal_id(
+        original
+        if original is not None
+        else trade
+    )
+
     text = (
         f"{result_header(result)}\n"
         "\n"
         f"{icon} "
         f"<b>{symbol} · "
         f"{signal}</b>\n"
+        "\n"
+        "🆔 Signal ID: "
+        f"<code>{signal_id}</code>\n"
     )
 
     if entry_price is not None:
@@ -753,7 +863,12 @@ def build_trade_closed_text(
     text += (
         "\n\n"
         "🕒 Result confirmed: "
-        f"<b>{result_confirmed}</b>"
+        f"<b>{result_confirmed}</b>\n"
+        "\n"
+        "📡 Market data: "
+        "<b>Twelve Data API</b>\n"
+        "⚙️ Result calculated automatically "
+        "by <b>AS Engine</b>"
     )
 
     if (
