@@ -4,11 +4,20 @@ import threading
 import time
 import html
 
+from datetime import (
+    datetime,
+    timedelta,
+    timezone,
+)
+
 import requests
 
 from user_subscriptions import (
     register_or_update_user,
     get_effective_access,
+    get_active_subscription,
+    get_subscription_history,
+    activate_vip,
 )
 
 from vip_access import (
@@ -44,12 +53,17 @@ RETRY_SECONDS = 5
 
 VIP_SYNC_INTERVAL_SECONDS = 60
 
+TRIAL_DURATION_HOURS = 48
+TRIAL_SOURCE = "TRIAL_TERMS_V1"
+
 STATE_KEY = "last_update_id"
 
 CALLBACK_MENU = "MENU"
 CALLBACK_STATUS = "STATUS"
 CALLBACK_VIP = "VIP"
 CALLBACK_VIP_ACCESS = "VIP_ACCESS"
+CALLBACK_TRIAL_INFO = "TRIAL_INFO"
+CALLBACK_TRIAL_START = "TRIAL_START"
 CALLBACK_CHANNEL = "CHANNEL"
 CALLBACK_ABOUT = "ABOUT"
 CALLBACK_HELP = "HELP"
@@ -552,6 +566,54 @@ def channel_keyboard(
     }
 
 
+def has_used_trial(
+    telegram_user_id
+):
+    history = get_subscription_history(
+        telegram_user_id
+    )
+
+    for subscription in history:
+        source = (
+            subscription.get(
+                "source"
+            )
+            or ""
+        ).upper()
+
+        if source.startswith(
+            "TRIAL"
+        ):
+            return True
+
+    return False
+
+
+def get_active_trial(
+    telegram_user_id
+):
+    subscription = get_active_subscription(
+        telegram_user_id
+    )
+
+    if subscription is None:
+        return None
+
+    source = (
+        subscription.get(
+            "source"
+        )
+        or ""
+    ).upper()
+
+    if not source.startswith(
+        "TRIAL"
+    ):
+        return None
+
+    return subscription
+
+
 def vip_keyboard(
     telegram_user_id,
     language,
@@ -595,6 +657,31 @@ def vip_keyboard(
             ]
         )
 
+    elif not has_used_trial(
+        telegram_user_id
+    ):
+        if language == "ru":
+            trial_text = (
+                "🎁 Попробовать VIP бесплатно 2 дня"
+            )
+
+        else:
+            trial_text = (
+                "🎁 Start 2-Day Free VIP Trial"
+            )
+
+        buttons.append(
+            [
+                {
+                    "text":
+                        trial_text,
+
+                    "callback_data":
+                        CALLBACK_TRIAL_INFO,
+                }
+            ]
+        )
+
     if language == "ru":
         back_text = (
             "🏠 Главное меню"
@@ -620,6 +707,46 @@ def vip_keyboard(
     return {
         "inline_keyboard":
             buttons
+    }
+
+
+def trial_terms_keyboard(
+    language
+):
+    if language == "ru":
+        accept_text = (
+            "✅ СОГЛАСЕН — НАЧАТЬ 2 ДНЯ"
+        )
+        back_text = (
+            "⬅️ Назад к VIP"
+        )
+    else:
+        accept_text = (
+            "✅ I AGREE — START 2 DAYS"
+        )
+        back_text = (
+            "⬅️ Back to VIP"
+        )
+
+    return {
+        "inline_keyboard": [
+            [
+                {
+                    "text":
+                        accept_text,
+                    "callback_data":
+                        CALLBACK_TRIAL_START,
+                }
+            ],
+            [
+                {
+                    "text":
+                        back_text,
+                    "callback_data":
+                        CALLBACK_VIP,
+                }
+            ],
+        ]
     }
 
 
@@ -853,6 +980,142 @@ def status_text(
     )
 
 
+def trial_terms_text(
+    language
+):
+    if language == "ru":
+        return (
+            "🎁 <b>AS VIP — 2 дня бесплатно</b>\n"
+            "\n"
+            "Перед началом ознакомьтесь "
+            "с условиями пробного доступа:\n"
+            "\n"
+            "• VIP-доступ действует "
+            "<b>48 часов</b> с момента активации.\n"
+            "• Платёжные данные не требуются.\n"
+            "• Автоматического списания денег нет.\n"
+            "• Бесплатный период доступен "
+            "один раз для одного Telegram-аккаунта.\n"
+            "• После 48 часов доступ в VIP-канал "
+            "закончится автоматически, если вы "
+            "отдельно не оформите платную подписку.\n"
+            "• AS VIP — информационный сервис "
+            "анализа рынка и торговых сигналов.\n"
+            "• Торговля связана с риском. "
+            "Прибыль и результат не гарантируются.\n"
+            "\n"
+            "Нажимая кнопку ниже, вы подтверждаете, "
+            "что прочитали и принимаете эти условия "
+            "и хотите начать предоставление "
+            "пробного доступа немедленно."
+        )
+
+    return (
+        "🎁 <b>AS VIP — 2-Day Free Trial</b>\n"
+        "\n"
+        "Please review the trial terms "
+        "before you start:\n"
+        "\n"
+        "• VIP access lasts for "
+        "<b>48 hours</b> from activation.\n"
+        "• No payment details are required.\n"
+        "• Nothing is charged automatically.\n"
+        "• The free trial is available once "
+        "per Telegram account.\n"
+        "• After 48 hours, VIP channel access "
+        "ends automatically unless you separately "
+        "purchase a paid subscription.\n"
+        "• AS VIP is an information service for "
+        "market analysis and trading signals.\n"
+        "• Trading involves risk. Profit and "
+        "results are not guaranteed.\n"
+        "\n"
+        "By pressing the button below, you confirm "
+        "that you have read and accept these terms "
+        "and want the trial service to start "
+        "immediately."
+    )
+
+
+def trial_used_text(
+    language
+):
+    if language == "ru":
+        return (
+            "🎁 <b>Бесплатный VIP уже использован</b>\n"
+            "\n"
+            "Пробный доступ предоставляется "
+            "один раз для одного Telegram-аккаунта.\n"
+            "\n"
+            "Платные тарифы на 1, 6 и 12 месяцев "
+            "будут доступны на следующем этапе."
+        )
+
+    return (
+        "🎁 <b>Free VIP Trial Already Used</b>\n"
+        "\n"
+        "The free trial is available once "
+        "per Telegram account.\n"
+        "\n"
+        "Paid plans for 1, 6 and 12 months "
+        "will be added in the next stage."
+    )
+
+
+def trial_invite_text(
+    language,
+    trial_expires_at,
+    invite_expires_at,
+):
+    safe_trial_expires = html.escape(
+        str(
+            trial_expires_at
+        )
+    )
+
+    safe_invite_expires = html.escape(
+        str(
+            invite_expires_at
+        )
+    )
+
+    if language == "ru":
+        return (
+            "🎁 <b>Ваш 2-дневный VIP активирован</b>\n"
+            "\n"
+            "✅ Бесплатный VIP действует до:\n"
+            f"<b>{safe_trial_expires} UTC</b>\n"
+            "\n"
+            "💳 Автоматического списания нет.\n"
+            "После окончания пробного периода "
+            "доступ завершится автоматически.\n"
+            "\n"
+            "🔐 Персональная ссылка для входа "
+            "действует до:\n"
+            f"<b>{safe_invite_expires} UTC</b>\n"
+            "\n"
+            "Нажмите кнопку ниже, чтобы войти "
+            "в VIP-канал."
+        )
+
+    return (
+        "🎁 <b>Your 2-Day VIP Trial Is Active</b>\n"
+        "\n"
+        "✅ Free VIP access is active until:\n"
+        f"<b>{safe_trial_expires} UTC</b>\n"
+        "\n"
+        "💳 There is no automatic charge.\n"
+        "When the trial ends, access will expire "
+        "automatically.\n"
+        "\n"
+        "🔐 Your personal join link is valid until:\n"
+        f"<b>{safe_invite_expires} UTC</b>\n"
+        "\n"
+        "Press the button below to join "
+        "the VIP channel."
+    )
+
+
 def vip_text(
     telegram_user_id,
     language,
@@ -871,6 +1134,10 @@ def vip_text(
         ) == "ACTIVE"
     )
 
+    active_trial = get_active_trial(
+        telegram_user_id
+    )
+
     if language == "ru":
         if is_vip:
             expires_at = (
@@ -879,6 +1146,23 @@ def vip_text(
                 )
                 or "Без ограничения"
             )
+
+            if active_trial is not None:
+                return (
+                    "⭐ <b>AS VIP — FREE TRIAL</b>\n"
+                    "\n"
+                    "✅ Ваш бесплатный VIP активен.\n"
+                    "\n"
+                    "Доступ действует до: "
+                    f"<b>{html.escape(str(expires_at))} UTC</b>\n"
+                    "\n"
+                    "💳 Автоматического списания нет.\n"
+                    "После окончания пробного периода "
+                    "доступ завершится автоматически.\n"
+                    "\n"
+                    "Нажмите кнопку ниже, чтобы получить "
+                    "персональный доступ в VIP-канал."
+                )
 
             return (
                 "⭐ <b>AS VIP</b>\n"
@@ -893,22 +1177,27 @@ def vip_text(
                 "доступ в VIP-канал."
             )
 
+        if has_used_trial(
+            telegram_user_id
+        ):
+            return trial_used_text(
+                language
+            )
+
         return (
             "⭐ <b>AS VIP</b>\n"
             "\n"
-            "VIP предоставляет доступ "
-            "к торговым сигналам с:\n"
+            "Получите полный доступ "
+            "к VIP-каналу на <b>2 дня бесплатно</b>.\n"
             "\n"
             "🎯 Entry\n"
             "🛑 Stop Loss\n"
             "🏁 Take Profit\n"
-            "📊 прозрачными результатами\n"
+            "📊 прозрачные результаты\n"
             "\n"
-            "Сейчас стратегия ещё проходит "
-            "исследование и тестирование.\n"
-            "\n"
-            "Поэтому покупка VIP пока "
-            "<b>недоступна</b>."
+            "💳 Без карты и без автоматического списания.\n"
+            "По окончании 48 часов вы сами решите, "
+            "оформлять ли платную подписку."
         )
 
     if is_vip:
@@ -918,6 +1207,23 @@ def vip_text(
             )
             or "No expiration"
         )
+
+        if active_trial is not None:
+            return (
+                "⭐ <b>AS VIP — FREE TRIAL</b>\n"
+                "\n"
+                "✅ Your free VIP access is active.\n"
+                "\n"
+                "Access ends: "
+                f"<b>{html.escape(str(expires_at))} UTC</b>\n"
+                "\n"
+                "💳 There is no automatic charge.\n"
+                "When the trial ends, access expires "
+                "automatically.\n"
+                "\n"
+                "Press the button below to get your "
+                "personal VIP channel access."
+            )
 
         return (
             "⭐ <b>AS VIP</b>\n"
@@ -933,22 +1239,27 @@ def vip_text(
             "to the VIP channel."
         )
 
+    if has_used_trial(
+        telegram_user_id
+    ):
+        return trial_used_text(
+            language
+        )
+
     return (
         "⭐ <b>AS VIP</b>\n"
         "\n"
-        "VIP provides access "
-        "to trading signals with:\n"
+        "Get full VIP channel access "
+        "<b>free for 2 days</b>.\n"
         "\n"
         "🎯 Entry\n"
         "🛑 Stop Loss\n"
         "🏁 Take Profit\n"
         "📊 transparent results\n"
         "\n"
-        "The strategy is currently "
-        "being researched and tested.\n"
-        "\n"
-        "VIP access is therefore "
-        "<b>not available for purchase yet</b>."
+        "💳 No card and no automatic charge.\n"
+        "After 48 hours, you decide whether "
+        "to purchase a paid subscription."
     )
 
 
@@ -1479,6 +1790,43 @@ def process_private_message(
     )
 
     if command == "/start":
+        start_parts = (
+            text.strip()
+            .split(
+                maxsplit=1
+            )
+        )
+
+        start_parameter = (
+            start_parts[1]
+            .strip()
+            .lower()
+            if len(start_parts) > 1
+            else ""
+        )
+
+        if start_parameter == "vip":
+            send_inline_message(
+                chat_id,
+                vip_text(
+                    telegram_user_id,
+                    language,
+                ),
+                vip_keyboard(
+                    telegram_user_id,
+                    language,
+                ),
+            )
+
+            print(
+                "USER BOT | "
+                "/start vip | "
+                f"UserDB={user['id']}",
+                flush=True,
+            )
+
+            return
+
         send_start_screen(
             chat_id,
             telegram_user,
@@ -1736,6 +2084,186 @@ def process_callback_query(
             f"{user['id'] if user else 'n/a'}",
             flush=True,
         )
+
+        return
+
+    if data == CALLBACK_TRIAL_INFO:
+        access = get_effective_access(
+            telegram_user_id
+        )
+
+        if (
+            access is not None
+            and access.get(
+                "plan"
+            ) == "VIP"
+            and access.get(
+                "status"
+            ) == "ACTIVE"
+        ):
+            edit_inline_message(
+                chat_id,
+                message_id,
+                vip_text(
+                    telegram_user_id,
+                    language,
+                ),
+                vip_keyboard(
+                    telegram_user_id,
+                    language,
+                ),
+            )
+            return
+
+        if has_used_trial(
+            telegram_user_id
+        ):
+            edit_inline_message(
+                chat_id,
+                message_id,
+                trial_used_text(
+                    language
+                ),
+                back_to_menu_keyboard(
+                    language
+                ),
+            )
+            return
+
+        edit_inline_message(
+            chat_id,
+            message_id,
+            trial_terms_text(
+                language
+            ),
+            trial_terms_keyboard(
+                language
+            ),
+        )
+
+        print(
+            "USER BOT | TRIAL TERMS | "
+            f"UserDB="
+            f"{user['id'] if user else 'n/a'}",
+            flush=True,
+        )
+
+        return
+
+    if data == CALLBACK_TRIAL_START:
+        access = get_effective_access(
+            telegram_user_id
+        )
+
+        if (
+            access is not None
+            and access.get(
+                "plan"
+            ) == "VIP"
+            and access.get(
+                "status"
+            ) == "ACTIVE"
+        ):
+            edit_inline_message(
+                chat_id,
+                message_id,
+                vip_text(
+                    telegram_user_id,
+                    language,
+                ),
+                vip_keyboard(
+                    telegram_user_id,
+                    language,
+                ),
+            )
+            return
+
+        if has_used_trial(
+            telegram_user_id
+        ):
+            edit_inline_message(
+                chat_id,
+                message_id,
+                trial_used_text(
+                    language
+                ),
+                back_to_menu_keyboard(
+                    language
+                ),
+            )
+            return
+
+        trial_expires_at = (
+            datetime.now(
+                timezone.utc
+            )
+            + timedelta(
+                hours=TRIAL_DURATION_HOURS
+            )
+        )
+
+        subscription = activate_vip(
+            telegram_user_id=(
+                telegram_user_id
+            ),
+            expires_at=(
+                trial_expires_at
+            ),
+            source=TRIAL_SOURCE,
+        )
+
+        result = create_vip_invite(
+            telegram_user_id
+        )
+
+        print(
+            "USER BOT | TRIAL START | "
+            f"UserDB="
+            f"{user['id'] if user else 'n/a'} | "
+            f"Subscription="
+            f"{subscription.get('id') if subscription else 'n/a'}",
+            flush=True,
+        )
+
+        if (
+            result
+            and result.get(
+                "ok"
+            )
+        ):
+            edit_inline_message(
+                chat_id,
+                message_id,
+                trial_invite_text(
+                    language,
+                    subscription.get(
+                        "expires_at"
+                    ),
+                    result.get(
+                        "expires_at"
+                    ),
+                ),
+                vip_invite_keyboard(
+                    language,
+                    result.get(
+                        "invite_link"
+                    ),
+                ),
+            )
+
+        else:
+            edit_inline_message(
+                chat_id,
+                message_id,
+                vip_text(
+                    telegram_user_id,
+                    language,
+                ),
+                vip_keyboard(
+                    telegram_user_id,
+                    language,
+                ),
+            )
 
         return
 
