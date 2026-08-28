@@ -60,6 +60,26 @@ except Exception as error:
     )
 
 
+MTF_SHADOW_AVAILABLE = False
+MTF_SHADOW_READY = False
+MTF_SHADOW_IMPORT_ERROR = None
+
+try:
+    from mtf_shadow_signals import (
+        init_mtf_shadow_storage,
+        process_mtf_shadow_signal,
+        count_mtf_shadow_signals,
+    )
+
+    MTF_SHADOW_AVAILABLE = True
+
+except Exception as error:
+    MTF_SHADOW_IMPORT_ERROR = (
+        f"{type(error).__name__}: "
+        f"{error}"
+    )
+
+
 from storage import (
     init_db,
     save_analysis,
@@ -317,37 +337,18 @@ def print_new_virtual_trades(
     for trade in trades:
         print(
             "VIRTUAL TRADE V2 OPENED | "
-
             f"{trade['symbol']} | "
-
-            f"ID="
-            f"{trade['id']} | "
-
+            f"ID={trade['id']} | "
             f"{trade['signal']} | "
-
-            f"Entry="
-            f"{trade['entry']:.5f} | "
-
-            f"SL="
-            f"{trade['stop_loss']:.5f} | "
-
-            f"TP="
-            f"{trade['take_profit']:.5f} | "
-
-            f"Risk="
-            f"{trade['risk_pips']:.2f} pips | "
-
-            f"Reward="
-            f"{trade['reward_pips']:.2f} pips | "
-
-            f"Spread="
-            f"{trade['spread_pips']:.2f} pips | "
-
+            f"Entry={trade['entry']:.5f} | "
+            f"SL={trade['stop_loss']:.5f} | "
+            f"TP={trade['take_profit']:.5f} | "
+            f"Risk={trade['risk_pips']:.2f} pips | "
+            f"Reward={trade['reward_pips']:.2f} pips | "
+            f"Spread={trade['spread_pips']:.2f} pips | "
             f"R:R=1:"
             f"{trade['reward_pips'] / trade['risk_pips']:.2f} | "
-
-            f"MaxHold="
-            f"{trade['max_hold_minutes']}m",
+            f"MaxHold={trade['max_hold_minutes']}m",
             flush=True,
         )
 
@@ -373,63 +374,32 @@ def print_trade_results(
             )
         )
 
-        if (
-            trade["result"]
-            == "AMBIGUOUS"
-        ):
+        if trade["result"] == "AMBIGUOUS":
             print(
                 "VIRTUAL TRADE V2 RESULT | "
-
                 f"{trade['symbol']} | "
-
-                f"ID="
-                f"{trade['trade_id']} | "
-
+                f"ID={trade['trade_id']} | "
                 f"{trade['signal']} | "
-
                 "AMBIGUOUS | "
-
-                f"MAE="
-                f"{mae} pips | "
-
-                f"MFE="
-                f"{mfe} pips | "
-
-                f"Candle="
-                f"{trade['candle_time']}",
+                f"MAE={mae} pips | "
+                f"MFE={mfe} pips | "
+                f"Candle={trade['candle_time']}",
                 flush=True,
             )
 
         else:
             print(
                 "VIRTUAL TRADE V2 CLOSED | "
-
                 f"{trade['symbol']} | "
-
-                f"ID="
-                f"{trade['trade_id']} | "
-
+                f"ID={trade['trade_id']} | "
                 f"{trade['signal']} | "
-
                 f"{trade['result']} | "
-
-                f"Gross="
-                f"{trade['gross_pips']:+.2f} pips | "
-
-                f"Net="
-                f"{trade['net_pips']:+.2f} pips | "
-
-                f"R="
-                f"{trade['r']:+.2f}R | "
-
-                f"MAE="
-                f"{mae} pips | "
-
-                f"MFE="
-                f"{mfe} pips | "
-
-                f"Candle="
-                f"{trade['candle_time']}",
+                f"Gross={trade['gross_pips']:+.2f} pips | "
+                f"Net={trade['net_pips']:+.2f} pips | "
+                f"R={trade['r']:+.2f}R | "
+                f"MAE={mae} pips | "
+                f"MFE={mfe} pips | "
+                f"Candle={trade['candle_time']}",
                 flush=True,
             )
 
@@ -462,32 +432,15 @@ def print_trade_summary(
     )
 
     print(
-        f"Trades="
-        f"{total} | "
-
-        f"TP="
-        f"{summary['take_profits'] or 0} | "
-
-        f"SL="
-        f"{summary['stop_losses'] or 0} | "
-
-        f"Timeout="
-        f"{summary['timeouts'] or 0} | "
-
-        f"Ambiguous="
-        f"{summary['ambiguous'] or 0} | "
-
-        f"Open="
-        f"{summary['open_trades'] or 0} | "
-
-        f"NetPips="
-        f"{summary['total_net_pips'] or 0:+.2f} | "
-
-        f"AvgNet="
-        f"{summary['avg_net_pips'] or 0:+.2f} | "
-
-        f"AvgR="
-        f"{summary['avg_r'] or 0:+.2f}R",
+        f"Trades={total} | "
+        f"TP={summary['take_profits'] or 0} | "
+        f"SL={summary['stop_losses'] or 0} | "
+        f"Timeout={summary['timeouts'] or 0} | "
+        f"Ambiguous={summary['ambiguous'] or 0} | "
+        f"Open={summary['open_trades'] or 0} | "
+        f"NetPips={summary['total_net_pips'] or 0:+.2f} | "
+        f"AvgNet={summary['avg_net_pips'] or 0:+.2f} | "
+        f"AvgR={summary['avg_r'] or 0:+.2f}R",
         flush=True,
     )
 
@@ -511,58 +464,30 @@ def print_excursion_summary(
     )
 
     for row in summary:
-        avg_mae = (
-            format_optional_pips(
-                row[
-                    "avg_mae_pips"
-                ]
-            )
+        avg_mae = format_optional_pips(
+            row["avg_mae_pips"]
         )
 
-        avg_mfe = (
-            format_optional_pips(
-                row[
-                    "avg_mfe_pips"
-                ]
-            )
+        avg_mfe = format_optional_pips(
+            row["avg_mfe_pips"]
         )
 
-        max_mae = (
-            format_optional_pips(
-                row[
-                    "max_mae_pips"
-                ]
-            )
+        max_mae = format_optional_pips(
+            row["max_mae_pips"]
         )
 
-        max_mfe = (
-            format_optional_pips(
-                row[
-                    "max_mfe_pips"
-                ]
-            )
+        max_mfe = format_optional_pips(
+            row["max_mfe_pips"]
         )
 
         print(
             f"{row['exit_reason']} | "
-
-            f"Closed="
-            f"{row['total_closed'] or 0} | "
-
-            f"Tracked="
-            f"{row['tracked'] or 0} | "
-
-            f"AvgMAE="
-            f"{avg_mae} pips | "
-
-            f"AvgMFE="
-            f"{avg_mfe} pips | "
-
-            f"MaxMAE="
-            f"{max_mae} pips | "
-
-            f"MaxMFE="
-            f"{max_mfe} pips",
+            f"Closed={row['total_closed'] or 0} | "
+            f"Tracked={row['tracked'] or 0} | "
+            f"AvgMAE={avg_mae} pips | "
+            f"AvgMFE={avg_mfe} pips | "
+            f"MaxMAE={max_mae} pips | "
+            f"MaxMFE={max_mfe} pips",
             flush=True,
         )
 
@@ -586,14 +511,10 @@ def print_outcome_summary(
     )
 
     for row in summary:
-        total = row[
-            "total"
-        ]
+        total = row["total"]
 
         wins = (
-            row[
-                "wins"
-            ]
+            row["wins"]
             or 0
         )
 
@@ -607,24 +528,12 @@ def print_outcome_summary(
 
         print(
             f"{row['horizon_minutes']}m | "
-
-            f"Signals="
-            f"{total} | "
-
-            f"Wins="
-            f"{wins} | "
-
-            f"Losses="
-            f"{row['losses'] or 0} | "
-
-            f"Flat="
-            f"{row['flat'] or 0} | "
-
-            f"WinRate="
-            f"{win_rate:.1f}% | "
-
-            f"AvgPips="
-            f"{row['avg_pips'] or 0:.2f}",
+            f"Signals={total} | "
+            f"Wins={wins} | "
+            f"Losses={row['losses'] or 0} | "
+            f"Flat={row['flat'] or 0} | "
+            f"WinRate={win_rate:.1f}% | "
+            f"AvgPips={row['avg_pips'] or 0:.2f}",
             flush=True,
         )
 
@@ -695,6 +604,46 @@ def initialize_signal_quality():
 
         print(
             "SIGNAL QUALITY INIT ERROR | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+        return False
+
+
+def initialize_mtf_shadow():
+    global MTF_SHADOW_READY
+
+    if not MTF_SHADOW_AVAILABLE:
+        print(
+            "MTF SHADOW DISABLED | "
+            f"Import error: "
+            f"{MTF_SHADOW_IMPORT_ERROR}",
+            flush=True,
+        )
+
+        return False
+
+    try:
+        init_mtf_shadow_storage()
+
+        MTF_SHADOW_READY = True
+
+        print(
+            "MTF shadow signals: ready | "
+            "Interval=30min | "
+            "Telegram=disabled",
+            flush=True,
+        )
+
+        return True
+
+    except Exception as error:
+        MTF_SHADOW_READY = False
+
+        print(
+            "MTF SHADOW INIT ERROR | "
             f"{type(error).__name__}: "
             f"{error}",
             flush=True,
@@ -831,10 +780,8 @@ def process_multi_timeframe_quality(
                 "MTF QUALITY SNAPSHOT SAVED | "
                 f"{symbol} | "
                 "Interval=30min | "
-                f"Candle="
-                f"{signal_snapshot['datetime']} | "
-                f"Signal="
-                f"{mtf_result['signal_direction']} | "
+                f"Candle={signal_snapshot['datetime']} | "
+                f"Signal={mtf_result['signal_direction']} | "
                 f"Candidate="
                 f"{mtf_result['signal_candidate_direction']}",
                 flush=True,
@@ -845,10 +792,8 @@ def process_multi_timeframe_quality(
                 "MTF QUALITY SNAPSHOT SAVED | "
                 f"{symbol} | "
                 "Interval=60min | "
-                f"Candle="
-                f"{context_snapshot['datetime']} | "
-                f"Signal="
-                f"{mtf_result['context_direction']} | "
+                f"Candle={context_snapshot['datetime']} | "
+                f"Signal={mtf_result['context_direction']} | "
                 f"Candidate="
                 f"{mtf_result['context_candidate_direction']}",
                 flush=True,
@@ -861,10 +806,8 @@ def process_multi_timeframe_quality(
             print(
                 "MTF ALIGNMENT | "
                 f"{symbol} | "
-                f"M30="
-                f"{mtf_result['signal_direction']} | "
-                f"H1="
-                f"{mtf_result['context_direction']} | "
+                f"M30={mtf_result['signal_direction']} | "
+                f"H1={mtf_result['context_direction']} | "
                 f"Alignment="
                 f"{mtf_result['direction_alignment']}",
                 flush=True,
@@ -875,6 +818,89 @@ def process_multi_timeframe_quality(
     except Exception as error:
         print(
             "MTF MEASUREMENT ERROR | "
+            f"{symbol} | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+        return None
+
+
+def process_mtf_shadow(
+    symbol,
+    mtf_result,
+    created_at,
+):
+    if (
+        not MTF_SHADOW_AVAILABLE
+        or not MTF_SHADOW_READY
+    ):
+        return None
+
+    if not isinstance(
+        mtf_result,
+        dict,
+    ):
+        return None
+
+    if not mtf_result.get(
+        "ready"
+    ):
+        return None
+
+    try:
+        shadow_result = (
+            process_mtf_shadow_signal(
+                symbol=symbol,
+                mtf_result=mtf_result,
+                created_at=created_at,
+            )
+        )
+
+        action = shadow_result.get(
+            "action"
+        )
+
+        if action == "ALREADY_PROCESSED":
+            return shadow_result
+
+        if shadow_result.get(
+            "created"
+        ):
+            print(
+                "MTF SHADOW NEW SIGNAL | "
+                f"{symbol} | "
+                f"ID={shadow_result.get('signal_id')} | "
+                f"Candle="
+                f"{shadow_result.get('candle_time')} | "
+                f"Direction="
+                f"{shadow_result.get('direction')} | "
+                f"Alignment="
+                f"{mtf_result.get('direction_alignment')} | "
+                f"Total="
+                f"{count_mtf_shadow_signals(symbol)} | "
+                "Telegram=NO",
+                flush=True,
+            )
+
+        else:
+            print(
+                "MTF SHADOW | "
+                f"{symbol} | "
+                f"Action={action} | "
+                f"Candle="
+                f"{shadow_result.get('candle_time')} | "
+                f"Direction="
+                f"{shadow_result.get('direction')}",
+                flush=True,
+            )
+
+        return shadow_result
+
+    except Exception as error:
+        print(
+            "MTF SHADOW ERROR | "
             f"{symbol} | "
             f"{type(error).__name__}: "
             f"{error}",
@@ -975,26 +1001,16 @@ def analyze_symbol(
         if created:
             print(
                 "NEW SIGNAL EVENT | "
-
                 f"{symbol} | "
-
                 f"{result['signal']} | "
-
-                f"Entry="
-                f"{result['close']:.5f} | "
-
-                f"SetupScore="
-                f"{result['setup_score']}/100 | "
-
+                f"Entry={result['close']:.5f} | "
+                f"SetupScore={result['setup_score']}/100 | "
                 f"Symbol signals="
                 f"{count_signal_events(symbol)}",
                 flush=True,
             )
 
-        elif (
-            reason
-            == "CONTINUATION"
-        ):
+        elif reason == "CONTINUATION":
             print(
                 f"{symbol} | "
                 f"{result['signal']} "
@@ -1046,24 +1062,14 @@ def analyze_symbol(
         for outcome in outcomes:
             print(
                 "OUTCOME | "
-
                 f"{outcome['symbol']} | "
-
                 f"{outcome['signal']} | "
-
                 f"Signal candle="
                 f"{outcome['signal_time']} | "
-
-                f"After="
-                f"{outcome['horizon']}m | "
-
+                f"After={outcome['horizon']}m | "
                 f"{outcome['result']} | "
-
-                f"Pips="
-                f"{outcome['pips']:.2f} | "
-
-                f"SetupScore="
-                f"{outcome['score']}/100",
+                f"Pips={outcome['pips']:.2f} | "
+                f"SetupScore={outcome['score']}/100",
                 flush=True,
             )
 
@@ -1076,9 +1082,17 @@ def analyze_symbol(
         candles,
     )
 
-    process_multi_timeframe_quality(
+    mtf_result = (
+        process_multi_timeframe_quality(
+            symbol=symbol,
+            candles=all_candles,
+            created_at=created_at,
+        )
+    )
+
+    process_mtf_shadow(
         symbol=symbol,
-        candles=all_candles,
+        mtf_result=mtf_result,
         created_at=created_at,
     )
 
@@ -1194,6 +1208,8 @@ def main():
 
     initialize_signal_quality()
 
+    initialize_mtf_shadow()
+
     if MULTI_TIMEFRAME_AVAILABLE:
         print(
             "MTF measurement bridge: ready | "
@@ -1210,21 +1226,13 @@ def main():
         )
 
     init_daily_report_table()
-
     init_weekly_report_table()
-
     init_market_overview_table()
-
     init_economic_calendar()
-
     init_news_digest_tables()
-
     init_health_monitor_table()
-
     init_15m_research_tables()
-
     init_15m_trade_tables()
-
     init_user_subscription_tables()
 
     print(
@@ -1249,14 +1257,10 @@ def main():
     for symbol in SYMBOLS:
         print(
             f"{symbol} | "
-            f"Records="
-            f"{count_records(symbol)} | "
-            f"Signals="
-            f"{count_signal_events(symbol)} | "
-            f"V2 Trades="
-            f"{count_virtual_trades(symbol)} | "
-            f"Open="
-            f"{count_open_virtual_trades(symbol)}",
+            f"Records={count_records(symbol)} | "
+            f"Signals={count_signal_events(symbol)} | "
+            f"V2 Trades={count_virtual_trades(symbol)} | "
+            f"Open={count_open_virtual_trades(symbol)}",
             flush=True,
         )
 
