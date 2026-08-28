@@ -82,11 +82,11 @@ def load_m30(connection, symbol):
     ).fetchall()
 
 
-def fetch_month(api_key, symbol, month):
+def fetch_month(api_key, symbol, month, interval=API_INTERVAL):
     start_date, end_date = month_bounds(month)
     params = {
         "symbol": symbol,
-        "interval": API_INTERVAL,
+        "interval": interval,
         "start_date": start_date,
         "end_date": end_date,
         "timezone": "UTC",
@@ -102,22 +102,24 @@ def fetch_month(api_key, symbol, month):
             if error.code == 429:
                 if attempt == MAX_ATTEMPTS:
                     raise RuntimeError(
-                        f"Twelve Data rate limit persisted for {symbol} {month}"
+                        f"Twelve Data rate limit persisted for "
+                        f"{symbol} {interval} {month}"
                     ) from None
                 print(
-                    f"RATE_LIMIT {symbol} {month} | waiting "
+                    f"RATE_LIMIT {symbol} {interval} {month} | waiting "
                     f"{RATE_LIMIT_WAIT_SECONDS:.0f}s",
                     flush=True,
                 )
                 time.sleep(RATE_LIMIT_WAIT_SECONDS)
                 continue
             raise RuntimeError(
-                f"Twelve Data HTTP {error.code} for {symbol} {month}"
+                f"Twelve Data HTTP {error.code} for {symbol} {interval} {month}"
             ) from None
         except URLError:
             if attempt == MAX_ATTEMPTS:
                 raise RuntimeError(
-                    f"Twelve Data connection failed for {symbol} {month}"
+                    f"Twelve Data connection failed for "
+                    f"{symbol} {interval} {month}"
                 ) from None
             time.sleep(REQUEST_INTERVAL_SECONDS)
             continue
@@ -126,12 +128,15 @@ def fetch_month(api_key, symbol, month):
             code = payload.get("code", "unknown")
             message = payload.get("message", "unknown API error")
             raise RuntimeError(
-                f"Twelve Data error {code} for {symbol} {month}: {message}"
+                f"Twelve Data error {code} for "
+                f"{symbol} {interval} {month}: {message}"
             )
 
         values = payload.get("values")
         if not values:
-            raise RuntimeError(f"No Twelve Data values for {symbol} {month}")
+            raise RuntimeError(
+                f"No Twelve Data values for {symbol} {interval} {month}"
+            )
         return normalize_api_values(values)
 
     raise RuntimeError("unreachable API retry state")

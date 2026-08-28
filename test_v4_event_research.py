@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import v4_event_comparison_backtest as backtest
 import v4_history_integrity_audit as history_audit
+import v4_history_m15_reconstruction_audit as reconstruction_audit
 import v4_event_strategy as strategy
 
 
@@ -633,13 +634,19 @@ class HistoryIntegrityAuditTests(unittest.TestCase):
                     b'"low":"1.0990","close":"1.1005"}]}'
                 )
 
-        with patch.object(history_audit, "urlopen", return_value=FakeResponse()):
+        with patch.object(
+            history_audit,
+            "urlopen",
+            return_value=FakeResponse(),
+        ) as urlopen_mock:
             result = history_audit.fetch_month(
                 "not-a-real-key",
                 "EUR/USD",
                 "2024-11",
+                interval="15min",
             )
 
+        self.assertIn("interval=15min", urlopen_mock.call_args.args[0])
         self.assertEqual(
             (1.1000, 1.1010, 1.0990, 1.1005),
             result["2024-11-01 00:00:00"],
@@ -658,6 +665,31 @@ class HistoryIntegrityAuditTests(unittest.TestCase):
         self.assertEqual(1, result["material_mismatches"])
         self.assertEqual(1, result["over_one_pip"])
         self.assertAlmostEqual(50.0, result["largest"][0][0], places=7)
+
+    def test_two_m15_rows_reconstruct_one_m30_row(self):
+        rows_15m = {
+            "2024-11-01 10:00:00": (1.1000, 1.1010, 1.0995, 1.1005),
+            "2024-11-01 10:15:00": (1.1005, 1.1020, 1.1000, 1.1015),
+        }
+
+        result = reconstruction_audit.reconstruct_m30(
+            rows_15m,
+            "2024-11-01 10:00:00",
+        )
+
+        self.assertEqual((1.1000, 1.1020, 1.0995, 1.1015), result)
+
+    def test_m15_reconstruction_requires_both_quarter_hours(self):
+        rows_15m = {
+            "2024-11-01 10:00:00": (1.1000, 1.1010, 1.0995, 1.1005),
+        }
+
+        result = reconstruction_audit.reconstruct_m30(
+            rows_15m,
+            "2024-11-01 10:00:00",
+        )
+
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":
