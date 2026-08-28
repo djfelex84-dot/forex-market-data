@@ -22,6 +22,12 @@ TRAIN_END = datetime(2025, 1, 1)
 HOLDOUT_START = datetime(2026, 1, 1)
 READ_OPEN_LIMIT = HOLDOUT_START - timedelta(minutes=M30_MINUTES)
 
+# Minimum evaluated sample sizes for the final observational
+# repeatability summary. These do NOT filter the audit tables,
+# alter CURRENT, or optimize strategy thresholds.
+MIN_REPEAT_TRAIN_N = 40
+MIN_REPEAT_VALIDATION_N = 15
+
 # Fixed descriptive bins only. They are not optimized and are not production thresholds.
 RSI_BINS = (
     (0.0, 32.0, "<32"), (32.0, 40.0, "32-40"),
@@ -366,13 +372,29 @@ def print_repeatability_observations(records):
         positives = []
         for signature in sorted(set(tg) & set(vg), key=lambda value: str(value)):
             tm, vm = metrics(tg[signature]), metrics(vg[signature])
-            tpos = tm["n"] > 0 and tm["pf"] > 1 and tm["avg_r"] > 0 and tm["net_r"] > 0
-            vpos = vm["n"] > 0 and vm["pf"] > 1 and vm["avg_r"] > 0 and vm["net_r"] > 0
-            if tpos and vpos:
+            train_positive = (
+                tm["pf"] > 1
+                and tm["avg_r"] > 0
+                and tm["net_r"] > 0
+            )
+            validation_positive = (
+                vm["pf"] > 1
+                and vm["avg_r"] > 0
+                and vm["net_r"] > 0
+            )
+            sample_ok = (
+                tm["n"] >= MIN_REPEAT_TRAIN_N
+                and vm["n"] >= MIN_REPEAT_VALIDATION_N
+            )
+            if train_positive and validation_positive and sample_ok:
                 positives.append((signature, tm, vm))
         print(f"\nDIMENSIONS: {' + '.join(dims)}")
         if not positives:
-            print("No predefined bucket is positive in both TRAIN and 2025.")
+            print(
+                "No predefined bucket passes positivity + minimum sample "
+                f"in both periods (TRAIN N>={MIN_REPEAT_TRAIN_N}, "
+                f"2025 N>={MIN_REPEAT_VALIDATION_N})."
+            )
             continue
         any_repeatable = True
         for signature, tm, vm in positives:
@@ -383,23 +405,25 @@ def print_repeatability_observations(records):
     print("\n" + "-" * 118)
     if any_repeatable:
         print(
-            "OBSERVATION: at least one predefined subset is positive in both TRAIN and 2025. "
-            "This is NOT proof of tradable edge and NOT a production recommendation."
+            "OBSERVATION: at least one predefined subset passes positivity and minimum-sample "
+            "requirements in both TRAIN and 2025. This is NOT proof of tradable edge and NOT a "
+            "production recommendation."
         )
     else:
         print(
-            "OBSERVATION: no predefined subset tested here is positive in both TRAIN and 2025. "
-            "That points toward base entry/candidate logic rather than M30 blocker strictness."
+            "OBSERVATION: no predefined subset tested here passes positivity and minimum-sample "
+            "requirements in both TRAIN and 2025. That points toward base entry/candidate logic "
+            "rather than M30 blocker strictness."
         )
 
 def main():
     print("=" * 118)
     print("AS M30 ENTRY EDGE AUDIT")
     print("=" * 118)
-    print("Purpose: inspect whether CURRENT real NEW events contain stable positive regimes.")
+    print("Purpose: inspect whether CURRENT M30 shadow-state NEW events contain stable positive regimes.")
     print("CURRENT blockers are NOT relaxed.")
     print("M30 timeframe, SL/TP and trading costs: unchanged.")
-    print("Execution: same conservative M30 geometry; ambiguous intrabar = worst-case SL.")
+    print("Execution: conservative M30 research geometry; ambiguous intrabar = worst-case SL.")
     print("TRAIN: 2021-2024 | VALIDATION: 2025 | 2026: NOT READ / NOT USED.")
     print("No Telegram | No API | No live DB writes | No production DB writes.")
     print("No parameter optimization | No automatic threshold selection.")
@@ -432,9 +456,11 @@ def main():
     print("=" * 118)
     print("1. CURRENT NEW events only. Blocked candidates are excluded; blockers were not relaxed.")
     print("2. SetupScore and price-position may have little/no variation because CURRENT VALID requires all checks to pass.")
-    print("3. A positive small bucket is not automatically an edge. Check N, year-by-year, both symbols and BUY/SELL dependence.")
-    print("4. This script does not search for best thresholds. It reports fixed descriptive bins.")
-    print("5. If no stable positive subset repeats in TRAIN and 2025, base entry/candidate logic is the likely problem.")
+    print(f"3. Final repeatability requires TRAIN N>={MIN_REPEAT_TRAIN_N} and 2025 N>={MIN_REPEAT_VALIDATION_N}; smaller buckets remain visible in the tables only.")
+    print("4. Check year-by-year, both symbols and BUY/SELL dependence before treating any surviving subset as a real edge.")
+    print("5. M30 execution here is a conservative research approximation, not an exact replay of 5min shadow-trade execution.")
+    print("6. This script does not search for best thresholds. It reports fixed descriptive bins.")
+    print("7. If no stable positive subset repeats in TRAIN and 2025, base entry/candidate logic is the likely problem.")
     print("\nENTRY_EDGE_AUDIT_OK")
 
 if __name__ == "__main__":
