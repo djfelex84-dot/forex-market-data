@@ -43,6 +43,23 @@ except Exception as error:
     )
 
 
+MULTI_TIMEFRAME_AVAILABLE = False
+MULTI_TIMEFRAME_IMPORT_ERROR = None
+
+try:
+    from multi_timeframe_analysis import (
+        build_multi_timeframe_analysis,
+    )
+
+    MULTI_TIMEFRAME_AVAILABLE = True
+
+except Exception as error:
+    MULTI_TIMEFRAME_IMPORT_ERROR = (
+        f"{type(error).__name__}: "
+        f"{error}"
+    )
+
+
 from storage import (
     init_db,
     save_analysis,
@@ -121,6 +138,8 @@ from telegram_user_bot import (
 
 
 CANDLE_CLOSE_DELAY_SECONDS = 15
+
+LEGACY_LIVE_CANDLE_LIMIT = 120
 
 VIP_TEST_MARKER_PATH = (
     "/app/data/"
@@ -739,13 +758,145 @@ def process_signal_quality(
         return None
 
 
+def process_multi_timeframe_quality(
+    symbol,
+    candles,
+    created_at,
+):
+    if (
+        not MULTI_TIMEFRAME_AVAILABLE
+        or not SIGNAL_QUALITY_AVAILABLE
+        or not SIGNAL_QUALITY_READY
+    ):
+        return None
+
+    try:
+        mtf_result = (
+            build_multi_timeframe_analysis(
+                candles,
+                symbol=symbol,
+            )
+        )
+
+        if not mtf_result.get(
+            "ready"
+        ):
+            print(
+                "MTF MEASUREMENT NOT READY | "
+                f"{symbol} | "
+                f"M30="
+                f"{mtf_result.get('signal_candle_count', 0)} | "
+                f"H1="
+                f"{mtf_result.get('context_candle_count', 0)} | "
+                f"SafeH1="
+                f"{mtf_result.get('safe_context_candle_count', 0)} | "
+                f"{mtf_result.get('reason', 'unknown')}",
+                flush=True,
+            )
+
+            return mtf_result
+
+        signal_snapshot = (
+            mtf_result[
+                "signal_quality"
+            ]
+        )
+
+        context_snapshot = (
+            mtf_result[
+                "context_quality"
+            ]
+        )
+
+        signal_saved = (
+            save_quality_snapshot(
+                symbol=symbol,
+                snapshot=signal_snapshot,
+                analysis_id=None,
+                created_at=created_at,
+            )
+        )
+
+        context_saved = (
+            save_quality_snapshot(
+                symbol=symbol,
+                snapshot=context_snapshot,
+                analysis_id=None,
+                created_at=created_at,
+            )
+        )
+
+        if signal_saved:
+            print(
+                "MTF QUALITY SNAPSHOT SAVED | "
+                f"{symbol} | "
+                "Interval=30min | "
+                f"Candle="
+                f"{signal_snapshot['datetime']} | "
+                f"Signal="
+                f"{mtf_result['signal_direction']} | "
+                f"Candidate="
+                f"{mtf_result['signal_candidate_direction']}",
+                flush=True,
+            )
+
+        if context_saved:
+            print(
+                "MTF QUALITY SNAPSHOT SAVED | "
+                f"{symbol} | "
+                "Interval=60min | "
+                f"Candle="
+                f"{context_snapshot['datetime']} | "
+                f"Signal="
+                f"{mtf_result['context_direction']} | "
+                f"Candidate="
+                f"{mtf_result['context_candidate_direction']}",
+                flush=True,
+            )
+
+        if (
+            signal_saved
+            or context_saved
+        ):
+            print(
+                "MTF ALIGNMENT | "
+                f"{symbol} | "
+                f"M30="
+                f"{mtf_result['signal_direction']} | "
+                f"H1="
+                f"{mtf_result['context_direction']} | "
+                f"Alignment="
+                f"{mtf_result['direction_alignment']}",
+                flush=True,
+            )
+
+        return mtf_result
+
+    except Exception as error:
+        print(
+            "MTF MEASUREMENT ERROR | "
+            f"{symbol} | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+        return None
+
+
 def analyze_symbol(
     symbol,
 ):
-    candles = (
+    all_candles = (
         fetch_candles(
             symbol
         )
+    )
+
+    candles = (
+        all_candles[
+            -LEGACY_LIVE_CANDLE_LIMIT:
+        ]
     )
 
     result = (
@@ -925,6 +1076,12 @@ def analyze_symbol(
         candles,
     )
 
+    process_multi_timeframe_quality(
+        symbol=symbol,
+        candles=all_candles,
+        created_at=created_at,
+    )
+
 
 def analyze_once():
     for symbol in SYMBOLS:
@@ -1036,6 +1193,21 @@ def main():
     init_db()
 
     initialize_signal_quality()
+
+    if MULTI_TIMEFRAME_AVAILABLE:
+        print(
+            "MTF measurement bridge: ready | "
+            "Signal=30min | Context=60min",
+            flush=True,
+        )
+
+    else:
+        print(
+            "MTF measurement bridge: disabled | "
+            f"Import error: "
+            f"{MULTI_TIMEFRAME_IMPORT_ERROR}",
+            flush=True,
+        )
 
     init_daily_report_table()
 
