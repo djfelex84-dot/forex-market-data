@@ -15,6 +15,7 @@ SIGNAL_INTERVAL = "30min"
 SIGNAL_INTERVAL_MINUTES = 30
 
 SHADOW_VERSION = "M30H1_SHADOW_V1"
+LEGACY_STATE_SHADOW_VERSION = "M30H1_SHADOW_V1"
 
 DEFAULT_DB_PATH = os.getenv(
     "MTF_SHADOW_DB_PATH",
@@ -160,6 +161,275 @@ def _parse_time(
     )
 
 
+def _get_table_info(
+    connection,
+    table_name,
+):
+    return connection.execute(
+        f"PRAGMA table_info({table_name})"
+    ).fetchall()
+
+
+def _get_table_columns(
+    connection,
+    table_name,
+):
+    return {
+        str(
+            row["name"]
+        )
+        for row in _get_table_info(
+            connection,
+            table_name,
+        )
+    }
+
+
+def _ensure_signal_atr_column(
+    connection,
+):
+    columns = _get_table_columns(
+        connection,
+        "mtf_shadow_signals",
+    )
+
+    if (
+        "signal_atr"
+        not in columns
+    ):
+        connection.execute(
+            """
+            ALTER TABLE mtf_shadow_signals
+            ADD COLUMN signal_atr REAL
+            """
+        )
+
+
+def _create_versioned_state_table(
+    connection,
+):
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mtf_shadow_state (
+            symbol TEXT NOT NULL,
+
+            signal_interval TEXT NOT NULL,
+
+            shadow_version TEXT NOT NULL,
+
+            last_candle_time TEXT NOT NULL,
+
+            last_signal_direction TEXT,
+
+            updated_at TEXT NOT NULL,
+
+            PRIMARY KEY (
+                symbol,
+                signal_interval,
+                shadow_version
+            )
+        )
+        """
+    )
+
+
+def _state_table_is_versioned(
+    connection,
+):
+    info = _get_table_info(
+        connection,
+        "mtf_shadow_state",
+    )
+
+    if not info:
+        return False
+
+    columns = {
+        str(
+            row["name"]
+        )
+        for row in info
+    }
+
+    required_columns = {
+        "symbol",
+        "signal_interval",
+        "shadow_version",
+        "last_candle_time",
+        "last_signal_direction",
+        "updated_at",
+    }
+
+    if not required_columns.issubset(
+        columns
+    ):
+        return False
+
+    primary_key_columns = [
+        str(
+            row["name"]
+        )
+        for row in sorted(
+            (
+                row
+                for row in info
+                if int(
+                    row["pk"]
+                    or 0
+                ) > 0
+            ),
+            key=lambda row: int(
+                row["pk"]
+            ),
+        )
+    ]
+
+    return (
+        primary_key_columns
+        == [
+            "symbol",
+            "signal_interval",
+            "shadow_version",
+        ]
+    )
+
+
+def _migrate_legacy_state_table(
+    connection,
+):
+    legacy_table = (
+        "mtf_shadow_state_legacy_migration"
+    )
+
+    existing = connection.execute(
+        """
+        SELECT 1
+        FROM sqlite_master
+        WHERE
+            type = 'table'
+            AND name = ?
+        """,
+        (
+            legacy_table,
+        ),
+    ).fetchone()
+
+    if existing is not None:
+        raise RuntimeError(
+            "Legacy MTF shadow state migration "
+            "table already exists"
+        )
+
+    connection.execute(
+        f"""
+        ALTER TABLE mtf_shadow_state
+        RENAME TO {legacy_table}
+        """
+    )
+
+    _create_versioned_state_table(
+        connection
+    )
+
+    legacy_columns = _get_table_columns(
+        connection,
+        legacy_table,
+    )
+
+    required_legacy_columns = {
+        "symbol",
+        "signal_interval",
+        "last_candle_time",
+        "last_signal_direction",
+        "updated_at",
+    }
+
+    if not required_legacy_columns.issubset(
+        legacy_columns
+    ):
+        raise RuntimeError(
+            "Legacy MTF shadow state schema "
+            "is not recognized"
+        )
+
+    if "shadow_version" in legacy_columns:
+        connection.execute(
+            f"""
+            INSERT INTO mtf_shadow_state (
+                symbol,
+                signal_interval,
+                shadow_version,
+                last_candle_time,
+                last_signal_direction,
+                updated_at
+            )
+            SELECT
+                symbol,
+                signal_interval,
+                shadow_version,
+                last_candle_time,
+                last_signal_direction,
+                updated_at
+            FROM {legacy_table}
+            """
+        )
+
+    else:
+        connection.execute(
+            f"""
+            INSERT INTO mtf_shadow_state (
+                symbol,
+                signal_interval,
+                shadow_version,
+                last_candle_time,
+                last_signal_direction,
+                updated_at
+            )
+            SELECT
+                symbol,
+                signal_interval,
+                ?,
+                last_candle_time,
+                last_signal_direction,
+                updated_at
+            FROM {legacy_table}
+            """,
+            (
+                LEGACY_STATE_SHADOW_VERSION,
+            ),
+        )
+
+    connection.execute(
+        f"""
+        DROP TABLE {legacy_table}
+        """
+    )
+
+
+def _ensure_versioned_state_table(
+    connection,
+):
+    info = _get_table_info(
+        connection,
+        "mtf_shadow_state",
+    )
+
+    if not info:
+        _create_versioned_state_table(
+            connection
+        )
+        return
+
+    if _state_table_is_versioned(
+        connection
+    ):
+        return
+
+    _migrate_legacy_state_table(
+        connection
+    )
+
+
 def init_mtf_shadow_storage(
     db_path=None,
 ):
@@ -168,6 +438,10 @@ def init_mtf_shadow_storage(
     )
 
     try:
+        connection.execute(
+            "BEGIN IMMEDIATE"
+        )
+
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS mtf_shadow_signals (
@@ -188,6 +462,8 @@ def init_mtf_shadow_storage(
                 signal_candidate_direction TEXT,
 
                 entry_price REAL NOT NULL,
+
+                signal_atr REAL,
 
                 strategy_status TEXT,
 
@@ -212,6 +488,10 @@ def init_mtf_shadow_storage(
             """
         )
 
+        _ensure_signal_atr_column(
+            connection
+        )
+
         connection.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS
@@ -225,23 +505,15 @@ def init_mtf_shadow_storage(
             """
         )
 
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS mtf_shadow_state (
-                symbol TEXT PRIMARY KEY,
-
-                signal_interval TEXT NOT NULL,
-
-                last_candle_time TEXT NOT NULL,
-
-                last_signal_direction TEXT,
-
-                updated_at TEXT NOT NULL
-            )
-            """
+        _ensure_versioned_state_table(
+            connection
         )
 
         connection.commit()
+
+    except Exception:
+        connection.rollback()
+        raise
 
     finally:
         connection.close()
@@ -256,14 +528,20 @@ def _get_state(
         SELECT
             symbol,
             signal_interval,
+            shadow_version,
             last_candle_time,
             last_signal_direction,
             updated_at
         FROM mtf_shadow_state
-        WHERE symbol = ?
+        WHERE
+            symbol = ?
+            AND signal_interval = ?
+            AND shadow_version = ?
         """,
         (
             symbol,
+            SIGNAL_INTERVAL,
+            SHADOW_VERSION,
         ),
     ).fetchone()
 
@@ -281,17 +559,19 @@ def _save_state(
         INSERT INTO mtf_shadow_state (
             symbol,
             signal_interval,
+            shadow_version,
             last_candle_time,
             last_signal_direction,
             updated_at
         )
-        VALUES (?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?)
 
-        ON CONFLICT(symbol)
+        ON CONFLICT(
+            symbol,
+            signal_interval,
+            shadow_version
+        )
         DO UPDATE SET
-            signal_interval =
-                excluded.signal_interval,
-
             last_candle_time =
                 excluded.last_candle_time,
 
@@ -304,6 +584,7 @@ def _save_state(
         (
             symbol,
             SIGNAL_INTERVAL,
+            SHADOW_VERSION,
             candle_time,
             signal_direction,
             created_at,
@@ -353,122 +634,115 @@ def _insert_shadow_signal(
             "has no valid entry price"
         )
 
+    signal_atr = (
+        _optional_float(
+            signal_result.get(
+                "atr"
+            )
+        )
+    )
+
+    if (
+        signal_atr is None
+        or signal_atr <= 0
+    ):
+        raise ValueError(
+            "M30 shadow signal "
+            "has no valid ATR"
+        )
+
     cursor = connection.execute(
         """
-        INSERT OR IGNORE INTO mtf_shadow_signals (
+        INSERT INTO mtf_shadow_signals (
             created_at,
-
             symbol,
-
             signal_interval,
-
             signal_candle_time,
-
             signal_close_time,
-
             signal_direction,
-
             signal_candidate_direction,
-
             entry_price,
-
+            signal_atr,
             strategy_status,
-
             setup_score,
-
             strategy_reason,
-
             context_interval,
-
             context_candle_time,
-
             context_close_time,
-
             context_direction,
-
             context_candidate_direction,
-
             direction_alignment,
-
             shadow_version
         )
         VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?
         )
+
+        ON CONFLICT(
+            symbol,
+            signal_interval,
+            signal_candle_time,
+            shadow_version
+        )
+        DO NOTHING
         """,
         (
             created_at,
-
             symbol,
-
             mtf_result.get(
                 "signal_interval",
                 SIGNAL_INTERVAL,
             ),
-
             mtf_result[
                 "signal_candle_time"
             ],
-
             mtf_result[
                 "signal_close_time"
             ],
-
             direction,
-
             _normalize_direction(
                 mtf_result.get(
                     "signal_candidate_direction"
                 )
             ),
-
             entry_price,
-
+            signal_atr,
             signal_result.get(
                 "status"
             ),
-
             _optional_int(
                 signal_result.get(
                     "setup_score"
                 )
             ),
-
             signal_result.get(
                 "reason"
             ),
-
             mtf_result[
                 "context_interval"
             ],
-
             mtf_result[
                 "context_candle_time"
             ],
-
             mtf_result[
                 "context_close_time"
             ],
-
             _normalize_direction(
                 mtf_result.get(
                     "context_direction"
                 )
             ),
-
             _normalize_direction(
                 mtf_result.get(
                     "context_candidate_direction"
                 )
             ),
-
             _normalize_alignment(
                 mtf_result.get(
                     "direction_alignment"
                 )
             ),
-
             SHADOW_VERSION,
         ),
     )
@@ -492,43 +766,6 @@ def process_mtf_shadow_signal(
     created_at,
     db_path=None,
 ):
-    """
-    Process one already-built M30/H1
-    diagnostic result.
-
-    This function creates only a SHADOW
-    signal event.
-
-    It does NOT:
-    - send Telegram;
-    - create a real/virtual trade;
-    - modify trading.db;
-    - PASS or REJECT a signal;
-    - call market-data APIs.
-
-    Event semantics:
-
-    WAIT/None -> no signal event.
-
-    Same BUY/SELL on the next M30 candle
-    -> continuation, no new event.
-
-    WAIT -> BUY/SELL
-    BUY -> SELL
-    SELL -> BUY
-    -> new shadow signal.
-
-    First observation is baseline only.
-    It does not create a signal because
-    the engine may have started in the
-    middle of an already-active setup.
-
-    A time gap larger than one expected
-    M30 step also resets the baseline,
-    because the missing period makes
-    continuation state unknown.
-    """
-
     if not isinstance(
         mtf_result,
         dict,
@@ -581,9 +818,7 @@ def process_mtf_shadow_signal(
                 connection,
                 symbol=symbol,
                 candle_time=candle_time,
-                signal_direction=(
-                    current_direction
-                ),
+                signal_direction=current_direction,
                 created_at=created_at,
             )
 
@@ -593,10 +828,8 @@ def process_mtf_shadow_signal(
                 "action": "BASELINE",
                 "created": False,
                 "signal_id": None,
-                "direction":
-                    current_direction,
-                "candle_time":
-                    candle_time,
+                "direction": current_direction,
+                "candle_time": candle_time,
             }
 
         previous_candle_time = str(
@@ -621,37 +854,26 @@ def process_mtf_shadow_signal(
             previous_candle_time
         )
 
-        if (
-            current_dt
-            < previous_dt
-        ):
+        if current_dt < previous_dt:
             connection.rollback()
 
             return {
                 "action": "STALE_CANDLE",
                 "created": False,
                 "signal_id": None,
-                "direction":
-                    current_direction,
-                "candle_time":
-                    candle_time,
+                "direction": current_direction,
+                "candle_time": candle_time,
             }
 
-        if (
-            current_dt
-            == previous_dt
-        ):
+        if current_dt == previous_dt:
             connection.rollback()
 
             return {
-                "action":
-                    "ALREADY_PROCESSED",
+                "action": "ALREADY_PROCESSED",
                 "created": False,
                 "signal_id": None,
-                "direction":
-                    current_direction,
-                "candle_time":
-                    candle_time,
+                "direction": current_direction,
+                "candle_time": candle_time,
             }
 
         gap_minutes = (
@@ -667,9 +889,7 @@ def process_mtf_shadow_signal(
                 connection,
                 symbol=symbol,
                 candle_time=candle_time,
-                signal_direction=(
-                    current_direction
-                ),
+                signal_direction=current_direction,
                 created_at=created_at,
             )
 
@@ -679,21 +899,16 @@ def process_mtf_shadow_signal(
                 "action": "GAP_BASELINE",
                 "created": False,
                 "signal_id": None,
-                "direction":
-                    current_direction,
-                "candle_time":
-                    candle_time,
-                "gap_minutes":
-                    gap_minutes,
+                "direction": current_direction,
+                "candle_time": candle_time,
+                "gap_minutes": gap_minutes,
             }
 
         _save_state(
             connection,
             symbol=symbol,
             candle_time=candle_time,
-            signal_direction=(
-                current_direction
-            ),
+            signal_direction=current_direction,
             created_at=created_at,
         )
 
@@ -704,11 +919,9 @@ def process_mtf_shadow_signal(
                 "action": "NO_SIGNAL",
                 "created": False,
                 "signal_id": None,
-                "previous_direction":
-                    previous_direction,
+                "previous_direction": previous_direction,
                 "direction": None,
-                "candle_time":
-                    candle_time,
+                "candle_time": candle_time,
             }
 
         if (
@@ -721,21 +934,19 @@ def process_mtf_shadow_signal(
                 "action": "CONTINUATION",
                 "created": False,
                 "signal_id": None,
-                "previous_direction":
-                    previous_direction,
-                "direction":
-                    current_direction,
-                "candle_time":
-                    candle_time,
+                "previous_direction": previous_direction,
+                "direction": current_direction,
+                "candle_time": candle_time,
             }
 
-        created, signal_id = (
-            _insert_shadow_signal(
-                connection,
-                symbol=symbol,
-                mtf_result=mtf_result,
-                created_at=created_at,
-            )
+        (
+            created,
+            signal_id,
+        ) = _insert_shadow_signal(
+            connection,
+            symbol=symbol,
+            mtf_result=mtf_result,
+            created_at=created_at,
         )
 
         connection.commit()
@@ -745,29 +956,107 @@ def process_mtf_shadow_signal(
                 "action": "DUPLICATE",
                 "created": False,
                 "signal_id": None,
-                "previous_direction":
-                    previous_direction,
-                "direction":
-                    current_direction,
-                "candle_time":
-                    candle_time,
+                "previous_direction": previous_direction,
+                "direction": current_direction,
+                "candle_time": candle_time,
             }
 
         return {
             "action": "NEW_SIGNAL",
             "created": True,
             "signal_id": signal_id,
-            "previous_direction":
-                previous_direction,
-            "direction":
-                current_direction,
-            "candle_time":
-                candle_time,
+            "previous_direction": previous_direction,
+            "direction": current_direction,
+            "candle_time": candle_time,
         }
 
     except Exception:
         connection.rollback()
         raise
+
+    finally:
+        connection.close()
+
+
+def backfill_mtf_shadow_signal_atr(
+    *,
+    signal_id,
+    signal_atr,
+    db_path=None,
+):
+    atr = _optional_float(
+        signal_atr
+    )
+
+    if (
+        atr is None
+        or atr <= 0
+    ):
+        raise ValueError(
+            "signal_atr must be "
+            "a positive finite number"
+        )
+
+    connection = _connect(
+        db_path
+    )
+
+    try:
+        cursor = connection.execute(
+            """
+            UPDATE mtf_shadow_signals
+            SET signal_atr = ?
+            WHERE
+                id = ?
+                AND signal_atr IS NULL
+            """,
+            (
+                atr,
+                int(
+                    signal_id
+                ),
+            ),
+        )
+
+        connection.commit()
+
+        return (
+            cursor.rowcount
+            > 0
+        )
+
+    finally:
+        connection.close()
+
+
+def get_mtf_shadow_signal(
+    signal_id,
+    db_path=None,
+):
+    connection = _connect(
+        db_path
+    )
+
+    try:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM mtf_shadow_signals
+            WHERE id = ?
+            """,
+            (
+                int(
+                    signal_id
+                ),
+            ),
+        ).fetchone()
+
+        if row is None:
+            return None
+
+        return dict(
+            row
+        )
 
     finally:
         connection.close()
@@ -803,7 +1092,9 @@ def count_mtf_shadow_signals(
             ).fetchone()
 
         return int(
-            row["total"]
+            row[
+                "total"
+            ]
             or 0
         )
 
