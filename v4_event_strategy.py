@@ -1,15 +1,17 @@
-from bisect import bisect_right
+"""Pure fixed-rule V4 event scanner for M30 research candles.
+
+The two setup families are intentionally independent and use no H1, EMA, RSI,
+session, or market-selection filter.  This keeps the first comparison focused
+on the entry principles requested for V4 rather than on parameter selection.
+"""
+
 from collections import Counter
 from datetime import datetime, timedelta
 
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 M30_MINUTES = 30
-H1_MINUTES = 60
-
 ATR_PERIOD = 14
-EMA_FAST = 20
-EMA_SLOW = 50
 
 RANGE_LOOKBACK = 12
 BREAKOUT_MIN_ATR = 0.10
@@ -21,8 +23,8 @@ FAKEOUT_MIN_SWEEP_ATR = 0.10
 STRUCTURAL_STOP_BUFFER_ATR = 0.10
 MIN_PREVIOUS_DAY_BARS = 24
 
-SETUP_BREAKOUT_RETEST = "V4_A_BREAKOUT_RETEST"
-SETUP_FAKEOUT = "V4_B_PREVIOUS_DAY_FAKEOUT"
+SETUP_BREAKOUT_RETEST = "BREAKOUT_RETEST"
+SETUP_FAKEOUT = "FAKEOUT"
 
 
 def _parse_time(value):
@@ -81,74 +83,6 @@ def _wilder_atr_series(rows, period=ATR_PERIOD):
     return result
 
 
-def _ema_series(values, period):
-    """EMA series with the same SMA seed convention used by indicators.ema."""
-    result = [None] * len(values)
-    if len(values) < period:
-        return result
-
-    ema_value = sum(values[:period]) / period
-    result[period - 1] = ema_value
-    multiplier = 2.0 / (period + 1)
-
-    for index in range(period, len(values)):
-        ema_value = (values[index] * multiplier) + (ema_value * (1.0 - multiplier))
-        result[index] = ema_value
-
-    return result
-
-
-def _build_h1_context(rows):
-    by_time = {_row_time(row): row for row in rows}
-    h1_rows = []
-
-    for open_time in sorted(by_time):
-        if open_time.minute != 0:
-            continue
-
-        second_time = open_time + timedelta(minutes=M30_MINUTES)
-        first = by_time.get(open_time)
-        second = by_time.get(second_time)
-        if first is None or second is None:
-            continue
-
-        h1_rows.append(
-            {
-                "open_time": open_time,
-                "close_time": open_time + timedelta(minutes=H1_MINUTES),
-                "open": float(first["open"]),
-                "high": max(float(first["high"]), float(second["high"])),
-                "low": min(float(first["low"]), float(second["low"])),
-                "close": float(second["close"]),
-            }
-        )
-
-    closes = [row["close"] for row in h1_rows]
-    fast = _ema_series(closes, EMA_FAST)
-    slow = _ema_series(closes, EMA_SLOW)
-
-    close_times = []
-    trends = []
-    for index, row in enumerate(h1_rows):
-        close_times.append(row["close_time"])
-        if fast[index] is None or slow[index] is None:
-            trends.append("NONE")
-        elif fast[index] > slow[index]:
-            trends.append("BUY")
-        elif fast[index] < slow[index]:
-            trends.append("SELL")
-        else:
-            trends.append("NONE")
-
-    result = []
-    for row in rows:
-        signal_close = _signal_close_time(row)
-        h1_index = bisect_right(close_times, signal_close) - 1
-        result.append(trends[h1_index] if h1_index >= 0 else "NONE")
-
-    return result
-
-
 def _previous_day_levels(rows):
     """Use the previous available trading date, so Monday naturally references Friday."""
     daily = {}
@@ -178,7 +112,7 @@ def _previous_day_levels(rows):
     return previous_for_day
 
 
-def _event(*, setup, direction, row, entry_price, stop_price, level, atr_value, h1_trend, source):
+def _event(*, setup, direction, row, entry_price, stop_price, level, atr_value, source):
     return {
         "setup": setup,
         "direction": direction,
@@ -187,12 +121,11 @@ def _event(*, setup, direction, row, entry_price, stop_price, level, atr_value, 
         "stop_price": float(stop_price),
         "level": float(level),
         "atr": float(atr_value),
-        "h1_trend": h1_trend,
         "source": source,
     }
 
 
-def _scan_breakout_retest(rows, atr_values, h1_trends):
+def _scan_breakout_retest(rows, atr_values):
     events = []
     diagnostics = Counter()
     pending = None
@@ -290,7 +223,6 @@ def _scan_breakout_retest(rows, atr_values, h1_trends):
                                 stop_price=stop_price,
                                 level=pending["level"],
                                 atr_value=pending["atr"],
-                                h1_trend=h1_trends[index],
                                 source="LOCAL_RANGE_12_M30",
                             )
                         )
@@ -320,7 +252,7 @@ def _scan_breakout_retest(rows, atr_values, h1_trends):
         buy_breakout = close > range_high + breakout_buffer and close > open_price
         sell_breakout = close < range_low - breakout_buffer and close < open_price
 
-        if buy_breakout and h1_trends[index] == "BUY":
+        if buy_breakout:
             pending = {
                 "stage": "WAIT_RETEST",
                 "direction": "BUY",
@@ -330,7 +262,7 @@ def _scan_breakout_retest(rows, atr_values, h1_trends):
                 "retest_deadline": index + RETEST_MAX_BARS,
             }
             diagnostics["BREAKOUT_BUY"] += 1
-        elif sell_breakout and h1_trends[index] == "SELL":
+        elif sell_breakout:
             pending = {
                 "stage": "WAIT_RETEST",
                 "direction": "SELL",
@@ -340,13 +272,10 @@ def _scan_breakout_retest(rows, atr_values, h1_trends):
                 "retest_deadline": index + RETEST_MAX_BARS,
             }
             diagnostics["BREAKOUT_SELL"] += 1
-        elif buy_breakout or sell_breakout:
-            diagnostics["BREAKOUT_H1_CONFLICT"] += 1
-
     return events, diagnostics
 
 
-def _scan_fakeouts(rows, atr_values, h1_trends):
+def _scan_fakeouts(rows, atr_values):
     events = []
     diagnostics = Counter()
     previous_levels = _previous_day_levels(rows)
@@ -401,7 +330,6 @@ def _scan_fakeouts(rows, atr_values, h1_trends):
                             stop_price=stop_price,
                             level=pending["level"],
                             atr_value=pending["atr"],
-                            h1_trend=h1_trends[index],
                             source=pending["source"],
                         )
                     )
@@ -483,17 +411,13 @@ def generate_v4_events(rows):
         }
 
     atr_values = _wilder_atr_series(rows)
-    h1_trends = _build_h1_context(rows)
-
     breakout_events, breakout_diag = _scan_breakout_retest(
         rows,
         atr_values,
-        h1_trends,
     )
     fakeout_events, fakeout_diag = _scan_fakeouts(
         rows,
         atr_values,
-        h1_trends,
     )
 
     return {

@@ -59,7 +59,50 @@ def load_m30(connection, symbol):
                 "close": float(row[4]),
             }
         )
+    validate_rows(result, symbol)
     return result
+
+
+def validate_schema(connection):
+    table = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='candles_30m'"
+    ).fetchone()
+    if table is None:
+        raise RuntimeError("Required table candles_30m is missing")
+
+    columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(candles_30m)").fetchall()
+    }
+    required = {"symbol", "datetime", "open", "high", "low", "close"}
+    missing = required - columns
+    if missing:
+        raise RuntimeError(f"candles_30m is missing columns: {sorted(missing)}")
+
+
+def validate_rows(rows, symbol):
+    if not rows:
+        raise RuntimeError(f"No M30 candles found for {symbol}")
+
+    previous_time = None
+    for index, row in enumerate(rows):
+        timestamp = row["_time"]
+        if timestamp >= READ_OPEN_LIMIT:
+            raise RuntimeError(f"2026 boundary violation for {symbol}: {timestamp}")
+        if timestamp.minute not in (0, 30) or timestamp.second != 0:
+            raise RuntimeError(f"Unaligned M30 timestamp for {symbol}: {timestamp}")
+        if previous_time is not None and timestamp <= previous_time:
+            raise RuntimeError(f"Duplicate/out-of-order M30 timestamp for {symbol}: {timestamp}")
+
+        open_price = row["open"]
+        high = row["high"]
+        low = row["low"]
+        close = row["close"]
+        values = (open_price, high, low, close)
+        if not all(math.isfinite(value) and value > 0 for value in values):
+            raise RuntimeError(f"Invalid price in {symbol} row {index}")
+        if high < max(open_price, low, close) or low > min(open_price, high, close):
+            raise RuntimeError(f"Invalid OHLC geometry in {symbol} row {index}")
+        previous_time = timestamp
 
 
 def cohort_for_entry(entry_time):
@@ -85,16 +128,19 @@ def execute_trade(*, rows, index_by_time, event, symbol, split_end):
     min_stop_distance = min_stop_pips * pip_size
 
     if direction == "BUY":
-        stop_distance = max(entry_price - raw_stop, min_stop_distance)
+        structural_distance = entry_price - raw_stop
+        if not math.isfinite(structural_distance) or structural_distance <= 0:
+            return {"reason": "INVALID_STOP", "r": None, "exit_time": None}
+        stop_distance = max(structural_distance, min_stop_distance)
         stop_loss = entry_price - stop_distance
         take_profit = entry_price + stop_distance * float(TAKE_PROFIT_R_MULTIPLE)
     else:
-        stop_distance = max(raw_stop - entry_price, min_stop_distance)
+        structural_distance = raw_stop - entry_price
+        if not math.isfinite(structural_distance) or structural_distance <= 0:
+            return {"reason": "INVALID_STOP", "r": None, "exit_time": None}
+        stop_distance = max(structural_distance, min_stop_distance)
         stop_loss = entry_price + stop_distance
         take_profit = entry_price - stop_distance * float(TAKE_PROFIT_R_MULTIPLE)
-
-    if stop_distance <= 0:
-        return {"reason": "INVALID_STOP", "r": None, "exit_time": None}
 
     deadline = entry_time + timedelta(minutes=MAX_TRADE_MINUTES)
     if deadline >= split_end:
@@ -204,11 +250,13 @@ def metric_line(label, records):
 
 def build_records():
     connection = sqlite3.connect(DB_URI, uri=True)
+    connection.execute("PRAGMA query_only = ON")
     records = []
     diagnostics = defaultdict(lambda: defaultdict(Counter))
-    raw_event_counts = defaultdict(Counter)
+    raw_events = []
 
     try:
+        validate_schema(connection)
         for symbol in SYMBOLS:
             rows = load_m30(connection, symbol)
             index_by_time = {row["_time"]: index for index, row in enumerate(rows)}
@@ -218,7 +266,6 @@ def build_records():
 
             for setup in SETUPS:
                 events = scan[setup]
-                raw_event_counts[symbol][setup] = len(events)
                 diagnostics[symbol][setup].update(scan["diagnostics"][setup])
 
                 print(
@@ -233,6 +280,17 @@ def build_records():
                     period, split_end = cohort_for_entry(signal_time)
                     if period is None:
                         continue
+
+                    raw_events.append(
+                        {
+                            "symbol": symbol,
+                            "setup": setup,
+                            "period": period,
+                            "year": signal_time.year,
+                            "direction": event["direction"],
+                            "signal_time": signal_time,
+                        }
+                    )
 
                     if signal_time < next_allowed_entry:
                         diagnostics[symbol][setup]["SKIP_OPEN_TRADE"] += 1
@@ -249,16 +307,6 @@ def build_records():
                     if trade.get("exit_time") is not None:
                         next_allowed_entry = trade["exit_time"]
 
-                    h1_alignment = (
-                        "ALIGNED"
-                        if event["h1_trend"] == event["direction"]
-                        else (
-                            "CONFLICT"
-                            if event["h1_trend"] in ("BUY", "SELL")
-                            else "UNKNOWN"
-                        )
-                    )
-
                     records.append(
                         {
                             "symbol": symbol,
@@ -267,7 +315,6 @@ def build_records():
                             "year": signal_time.year,
                             "direction": event["direction"],
                             "signal_time": signal_time,
-                            "h1_alignment": h1_alignment,
                             "reason": trade["reason"],
                             "r": trade.get("r"),
                         }
@@ -278,10 +325,10 @@ def build_records():
     finally:
         connection.close()
 
-    return records, diagnostics, raw_event_counts
+    return records, diagnostics, raw_events
 
 
-def subset(records, *, setup=None, period=None, symbol=None, direction=None, year=None, alignment=None):
+def subset(records, *, setup=None, period=None, symbol=None, direction=None, year=None):
     result = records
     if setup is not None:
         result = [row for row in result if row["setup"] == setup]
@@ -293,8 +340,6 @@ def subset(records, *, setup=None, period=None, symbol=None, direction=None, yea
         result = [row for row in result if row["direction"] == direction]
     if year is not None:
         result = [row for row in result if row["year"] == year]
-    if alignment is not None:
-        result = [row for row in result if row["h1_alignment"] == alignment]
     return result
 
 
@@ -321,48 +366,86 @@ def print_setup_result(records, setup):
         for direction in ("BUY", "SELL"):
             print(metric_line(direction, subset(records, setup=setup, period=period, direction=direction)))
 
+    print("\nSYMBOL + DIRECTION")
+    for period in ("TRAIN_2021_2024", "VALIDATION_2025"):
+        print(period)
+        for symbol in SYMBOLS:
+            for direction in ("BUY", "SELL"):
+                print(
+                    metric_line(
+                        f"{symbol} {direction}",
+                        subset(
+                            records,
+                            setup=setup,
+                            period=period,
+                            symbol=symbol,
+                            direction=direction,
+                        ),
+                    )
+                )
+
     print("\nYEAR-BY-YEAR")
     for year in (2021, 2022, 2023, 2024, 2025):
         print(metric_line(str(year), subset(records, setup=setup, year=year)))
 
-    print("\nH1 ALIGNMENT (diagnostic only for fakeout)")
-    for period in ("TRAIN_2021_2024", "VALIDATION_2025"):
-        print(period)
-        for alignment in ("ALIGNED", "CONFLICT", "UNKNOWN"):
-            rows = subset(records, setup=setup, period=period, alignment=alignment)
-            if rows:
-                print(metric_line(alignment, rows))
 
-
-def print_decision(records):
+def print_repeatability(records):
     print("\n" + "=" * 122)
-    print("DECISION")
+    print("REPEATABILITY OBSERVATION | NOT A QUALITY GATE")
     print("=" * 122)
 
     for setup in SETUPS:
         train_m = metrics(subset(records, setup=setup, period="TRAIN_2021_2024"))
         validation_m = metrics(subset(records, setup=setup, period="VALIDATION_2025"))
 
-        enough_sample = train_m["n"] >= 100 and validation_m["n"] >= 25
         positive_both = (
-            train_m["pf"] > 1.0
+            train_m["n"] > 0
+            and validation_m["n"] > 0
+            and train_m["pf"] > 1.0
             and train_m["avg_r"] > 0.0
             and validation_m["pf"] > 1.0
             and validation_m["avg_r"] > 0.0
         )
 
-        if enough_sample and positive_both:
-            decision = "PASS FIRST SCREEN"
-        elif not enough_sample:
-            decision = "INCONCLUSIVE - LOW SAMPLE"
-        else:
-            decision = "FAIL FIRST SCREEN"
+        observation = (
+            "POSITIVE IN BOTH PERIODS"
+            if positive_both
+            else "NOT POSITIVE IN BOTH PERIODS"
+        )
 
         print(
-            f"{setup:30} | {decision} | "
+            f"{setup:30} | {observation} | "
+            f"TRAIN N={train_m['n']:5d} | 2025 N={validation_m['n']:5d} | "
             f"TRAIN PF={train_m['pf']:.3f} AvgR={train_m['avg_r']:+.3f} | "
             f"2025 PF={validation_m['pf']:.3f} AvgR={validation_m['avg_r']:+.3f}"
         )
+
+
+def print_raw_events(raw_events):
+    print("\n" + "=" * 122)
+    print("CONFIRMED SETUP EVENTS | BEFORE ONE-OPEN EXECUTION RULE")
+    print("=" * 122)
+
+    for setup in SETUPS:
+        print(f"\n{setup}")
+        for period in ("TRAIN_2021_2024", "VALIDATION_2025"):
+            print(f"  {period}")
+            for symbol in SYMBOLS:
+                for direction in ("BUY", "SELL"):
+                    count = len(
+                        subset(
+                            raw_events,
+                            setup=setup,
+                            period=period,
+                            symbol=symbol,
+                            direction=direction,
+                        )
+                    )
+                    print(f"    {symbol:7} | {direction:4} | Events={count:5d}")
+
+        print("  YEAR-BY-YEAR")
+        for year in (2021, 2022, 2023, 2024, 2025):
+            print(f"    {year} | Events={len(subset(raw_events, setup=setup, year=year)):5d}")
 
 
 def main():
@@ -372,18 +455,22 @@ def main():
     print("Research only | DB read-only | No Telegram | No API | No live writes")
     print("TRAIN=2021-2024 | VALIDATION=2025 | 2026 NOT READ")
     print(
+        "BREAKOUT_RETEST: prior 12 M30 range | break=0.10 ATR | "
+        "retest<=4 bars | next-candle confirmation"
+    )
+    print(
+        "FAKEOUT: Previous Day High/Low UTC only | sweep=0.10 ATR | "
+        "next-candle confirmation"
+    )
+    print("No H1/EMA/RSI/session/Asia filter | fixed rules | no parameter selection")
+    print(
         f"Execution: structural SL | TP={TAKE_PROFIT_R_MULTIPLE:.2f}R | "
         f"max trade={MAX_TRADE_MINUTES}m | one open trade per setup per symbol"
     )
 
-    records, diagnostics, raw_event_counts = build_records()
+    records, diagnostics, raw_events = build_records()
 
-    print("\n" + "=" * 122)
-    print("RAW EVENT COUNTS")
-    print("=" * 122)
-    for symbol in SYMBOLS:
-        for setup in SETUPS:
-            print(f"{symbol:10} | {setup:30} | {raw_event_counts[symbol][setup]:5d}")
+    print_raw_events(raw_events)
 
     for setup in SETUPS:
         print_setup_result(records, setup)
@@ -397,7 +484,7 @@ def main():
             for key, count in diagnostics[symbol][setup].most_common(12):
                 print(f"{key:44} | {count}")
 
-    print_decision(records)
+    print_repeatability(records)
     print("\nV4_EVENT_COMPARISON_OK")
 
 
