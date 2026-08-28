@@ -19,6 +19,30 @@ from strategy import (
     analyze_market,
 )
 
+
+SIGNAL_QUALITY_AVAILABLE = False
+SIGNAL_QUALITY_READY = False
+SIGNAL_QUALITY_IMPORT_ERROR = None
+
+try:
+    from signal_quality import (
+        build_quality_snapshot,
+    )
+
+    from signal_quality_storage import (
+        init_quality_storage,
+        save_quality_snapshot,
+    )
+
+    SIGNAL_QUALITY_AVAILABLE = True
+
+except Exception as error:
+    SIGNAL_QUALITY_IMPORT_ERROR = (
+        f"{type(error).__name__}: "
+        f"{error}"
+    )
+
+
 from storage import (
     init_db,
     save_analysis,
@@ -622,6 +646,99 @@ def process_research_15m(
         return None
 
 
+def initialize_signal_quality():
+    global SIGNAL_QUALITY_READY
+
+    if not SIGNAL_QUALITY_AVAILABLE:
+        print(
+            "SIGNAL QUALITY DISABLED | "
+            f"Import error: "
+            f"{SIGNAL_QUALITY_IMPORT_ERROR}",
+            flush=True,
+        )
+
+        return False
+
+    try:
+        init_quality_storage()
+
+        SIGNAL_QUALITY_READY = True
+
+        print(
+            "Signal quality measurement: ready",
+            flush=True,
+        )
+
+        return True
+
+    except Exception as error:
+        SIGNAL_QUALITY_READY = False
+
+        print(
+            "SIGNAL QUALITY INIT ERROR | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+        return False
+
+
+def process_signal_quality(
+    symbol,
+    candles,
+    result,
+    analysis_id,
+    created_at,
+):
+    if (
+        not SIGNAL_QUALITY_AVAILABLE
+        or not SIGNAL_QUALITY_READY
+    ):
+        return None
+
+    try:
+        snapshot = (
+            build_quality_snapshot(
+                candles=candles,
+                strategy_result=result,
+                interval=INTERVAL,
+            )
+        )
+
+        saved = (
+            save_quality_snapshot(
+                symbol=symbol,
+                snapshot=snapshot,
+                analysis_id=analysis_id,
+                created_at=created_at,
+            )
+        )
+
+        if saved:
+            print(
+                "QUALITY SNAPSHOT SAVED | "
+                f"{symbol} | "
+                f"Candle={snapshot['datetime']} | "
+                f"Direction={snapshot['direction']} | "
+                f"Status={snapshot['strategy_status']}",
+                flush=True,
+            )
+
+        return snapshot
+
+    except Exception as error:
+        print(
+            "SIGNAL QUALITY ERROR | "
+            f"{symbol} | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+        return None
+
+
 def analyze_symbol(
     symbol,
 ):
@@ -680,6 +797,14 @@ def analyze_symbol(
             f"already exists | skipped",
             flush=True,
         )
+
+    process_signal_quality(
+        symbol=symbol,
+        candles=candles,
+        result=result,
+        analysis_id=analysis_id,
+        created_at=created_at,
+    )
 
     if analysis_id is not None:
         (
@@ -909,6 +1034,8 @@ def seconds_until_next_check():
 
 def main():
     init_db()
+
+    initialize_signal_quality()
 
     init_daily_report_table()
 
