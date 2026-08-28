@@ -8,6 +8,7 @@ from urllib.error import URLError
 from unittest.mock import patch
 
 import v4_dukascopy_forensic_audit as forensic
+import v4_dukascopy_daily_m1_audit as daily_audit
 import v4_event_anatomy as anatomy
 import v4_research_data as research_data
 import v4_event_strategy as strategy
@@ -115,6 +116,203 @@ class DukascopyDataTests(unittest.TestCase):
                 "EUR/USD",
                 datetime(2024, 11, 28, 12, 30),
             )
+
+    def test_m1_day_url_uses_zero_based_month_and_offer_side(self):
+        result = research_data.dukascopy_m1_day_url(
+            "GBP/USD",
+            datetime(2024, 11, 28),
+            "ask",
+        )
+
+        self.assertEqual(
+            "https://datafeed.dukascopy.com/datafeed/"
+            "GBPUSD/2024/10/28/ASK_candles_min_1.bi5",
+            result,
+        )
+        with self.assertRaises(ValueError):
+            research_data.dukascopy_m1_day_url(
+                "GBP/USD",
+                datetime(2024, 11, 28, 1),
+                "ask",
+            )
+        with self.assertRaises(ValueError):
+            research_data.dukascopy_m1_day_url(
+                "GBP/USD",
+                datetime(2024, 11, 28),
+                "mid",
+            )
+
+    def test_m1_bi5_decoder_preserves_field_order_scale_and_time(self):
+        raw = b"".join(
+            [
+                struct.pack(
+                    ">IIIIIf",
+                    3_600,
+                    110_000,
+                    110_020,
+                    109_980,
+                    110_050,
+                    12.5,
+                ),
+                struct.pack(
+                    ">IIIIIf",
+                    3_660,
+                    110_020,
+                    109_990,
+                    109_970,
+                    110_030,
+                    8.25,
+                ),
+            ]
+        )
+
+        result = research_data.decode_bi5_m1_candles(
+            lzma.compress(raw),
+            symbol="EUR/USD",
+            day_start=datetime(2024, 11, 28),
+            side="bid",
+        )
+
+        self.assertEqual(2, len(result))
+        self.assertEqual(datetime(2024, 11, 28, 1), result[0]["timestamp"])
+        self.assertEqual("bid", result[0]["side"])
+        self.assertEqual(
+            side_ohlc(1.10000, 1.10050, 1.09980, 1.10020),
+            result[0]["ohlc"],
+        )
+        self.assertEqual(12.5, result[0]["volume"])
+
+    def test_m1_bi5_decoder_rejects_invalid_offset_and_geometry(self):
+        unaligned = struct.pack(
+            ">IIIIIf",
+            61,
+            110_000,
+            110_020,
+            109_980,
+            110_050,
+            1.0,
+        )
+        invalid_geometry = struct.pack(
+            ">IIIIIf",
+            60,
+            110_000,
+            110_020,
+            109_980,
+            110_010,
+            1.0,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "offset"):
+            research_data.decode_bi5_m1_candles(
+                lzma.compress(unaligned),
+                symbol="EUR/USD",
+                day_start=datetime(2024, 11, 28),
+                side="bid",
+            )
+        with self.assertRaisesRegex(RuntimeError, "geometry"):
+            research_data.decode_bi5_m1_candles(
+                lzma.compress(invalid_geometry),
+                symbol="EUR/USD",
+                day_start=datetime(2024, 11, 28),
+                side="bid",
+            )
+
+    def test_daily_bid_ask_merge_builds_mid_proxy_without_fake_ticks(self):
+        start = datetime(2024, 11, 28, 12)
+        bid_rows = []
+        ask_rows = []
+        for minute in range(30):
+            timestamp = start + timedelta(minutes=minute)
+            bid_rows.append(
+                {
+                    "timestamp": timestamp,
+                    "side": "bid",
+                    "ohlc": side_ohlc(1.1000, 1.1002, 1.0998, 1.1001),
+                    "volume": 10.0,
+                }
+            )
+            ask_rows.append(
+                {
+                    "timestamp": timestamp,
+                    "side": "ask",
+                    "ohlc": side_ohlc(1.1002, 1.1004, 1.1000, 1.1003),
+                    "volume": 12.0,
+                }
+            )
+
+        merged = research_data.merge_bid_ask_m1(bid_rows, ask_rows)
+        m30 = research_data.aggregate_m1_to_m30(merged)
+
+        self.assertEqual(30, len(merged))
+        self.assertEqual(
+            side_ohlc(1.1001, 1.1003, 1.0999, 1.1002),
+            merged[0]["mid"],
+        )
+        self.assertNotIn("tick_count", merged[0])
+        self.assertEqual(0, m30[0]["tick_count"])
+        self.assertEqual(60, m30[0]["source_bar_count"])
+        self.assertEqual("USABLE", m30[0]["quality_status"])
+
+    def test_daily_bid_ask_merge_rejects_timestamp_mismatch(self):
+        bid = {
+            "timestamp": datetime(2024, 11, 28, 12),
+            "side": "bid",
+            "ohlc": side_ohlc(1.1000, 1.1002, 1.0998, 1.1001),
+            "volume": 10.0,
+        }
+        ask = {
+            "timestamp": datetime(2024, 11, 28, 12, 1),
+            "side": "ask",
+            "ohlc": side_ohlc(1.1002, 1.1004, 1.1000, 1.1003),
+            "volume": 12.0,
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "timestamps differ"):
+            research_data.merge_bid_ask_m1([bid], [ask])
+
+    def test_daily_bid_ask_merge_rejects_wrong_side_label(self):
+        row = {
+            "timestamp": datetime(2024, 11, 28, 12),
+            "side": "ask",
+            "ohlc": side_ohlc(1.1000, 1.1002, 1.0998, 1.1001),
+            "volume": 10.0,
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "non-BID"):
+            research_data.merge_bid_ask_m1([row], [row])
+
+    def test_daily_adapter_comparison_accepts_exact_tick_path(self):
+        start = datetime(2024, 11, 28, 12)
+        reference = flat_m1_rows(start, 2)
+        candidate = [dict(row) for row in reference]
+
+        result = daily_audit.compare_paths(reference, candidate, [start])
+
+        self.assertTrue(result["adapter_accepted"])
+        self.assertEqual(2, result["overlap_rows"])
+        self.assertEqual([], result["missing_daily_timestamps"])
+        self.assertEqual([], result["extra_daily_timestamps_in_verified_hours"])
+        self.assertEqual(0.0, result["side_absolute_max_ohlc_diff_pips"])
+
+    def test_daily_adapter_comparison_rejects_synthetic_extra_minute(self):
+        start = datetime(2024, 11, 28, 12)
+        reference = flat_m1_rows(start, 2)
+        candidate = [dict(row) for row in reference]
+        candidate.append(m1_row(
+            start + timedelta(minutes=2),
+            open_price=1.1000,
+            high=1.1001,
+            low=1.0999,
+            close=1.1000,
+        ))
+
+        result = daily_audit.compare_paths(reference, candidate, [start])
+
+        self.assertFalse(result["adapter_accepted"])
+        self.assertEqual(
+            [start + timedelta(minutes=2)],
+            result["extra_daily_timestamps_in_verified_hours"],
+        )
 
     def test_bi5_decoder_preserves_bid_ask_and_tick_order(self):
         raw = b"".join(

@@ -23,7 +23,9 @@ from urllib.request import Request, urlopen
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 DUKASCOPY_ARCHIVE_ROOT = "https://datafeed.dukascopy.com/datafeed"
 TICK_RECORD = struct.Struct(">IIIff")
+CANDLE_RECORD = struct.Struct(">IIIIIf")
 SIDES = ("bid", "ask", "mid")
+OFFER_SIDES = ("bid", "ask")
 OHLC_FIELDS = ("open", "high", "low", "close")
 PRICE_SCALES = {
     "EUR/USD": 100_000.0,
@@ -90,22 +92,42 @@ def dukascopy_hour_url(symbol, hour_start):
     )
 
 
-def download_hour(
-    symbol,
-    hour_start,
-    timeout=90,
+def dukascopy_m1_day_url(symbol, day_start, side):
+    """Build a candidate public daily M1 archive URL.
+
+    The path and binary adapter remain research candidates until their output
+    passes a field-by-field comparison against independently decoded ticks.
+    """
+    if symbol not in PRICE_SCALES:
+        raise ValueError(f"Unsupported V4 research symbol: {symbol}")
+    side = str(side).lower()
+    if side not in OFFER_SIDES:
+        raise ValueError(f"Unsupported Dukascopy offer side: {side}")
+    day_start = parse_utc(day_start)
+    if day_start != day_start.replace(hour=0, minute=0, second=0, microsecond=0):
+        raise ValueError(f"Dukascopy day is not UTC-midnight aligned: {day_start}")
+    instrument = symbol.replace("/", "")
+    return (
+        f"{DUKASCOPY_ARCHIVE_ROOT}/{instrument}/"
+        f"{day_start.year:04d}/{day_start.month - 1:02d}/"
+        f"{day_start.day:02d}/{side.upper()}_candles_min_1.bi5"
+    )
+
+
+def _download_archive(
     *,
-    max_attempts=6,
-    retry_backoff_seconds=2.0,
-    retry_notifier=None,
+    url,
+    label,
+    timeout,
+    max_attempts,
+    retry_backoff_seconds,
+    retry_notifier,
 ):
-    """Download one hour with bounded retries for transient transport errors."""
     if max_attempts < 1:
         raise ValueError("max_attempts must be positive")
     if retry_backoff_seconds < 0:
         raise ValueError("retry_backoff_seconds cannot be negative")
 
-    url = dukascopy_hour_url(symbol, hour_start)
     request = Request(
         url,
         headers={
@@ -123,9 +145,7 @@ def download_hour(
             if error.code == 404:
                 return b"", url
             if error.code not in RETRYABLE_HTTP_CODES:
-                raise RuntimeError(
-                    f"Dukascopy HTTP {error.code} for {symbol} {hour_start}"
-                ) from None
+                raise RuntimeError(f"Dukascopy HTTP {error.code} for {label}") from None
             failure = f"HTTP {error.code}"
         except (URLError, ConnectionResetError, TimeoutError, OSError) as error:
             reason = getattr(error, "reason", error)
@@ -134,7 +154,7 @@ def download_hour(
         if attempt == max_attempts:
             raise RuntimeError(
                 f"Dukascopy download failed after {max_attempts} attempts for "
-                f"{symbol} {hour_start}: {failure}"
+                f"{label}: {failure}"
             ) from None
 
         delay = min(
@@ -147,6 +167,49 @@ def download_hour(
             time.sleep(delay)
 
     raise AssertionError("Unreachable Dukascopy download state")
+
+
+def download_hour(
+    symbol,
+    hour_start,
+    timeout=90,
+    *,
+    max_attempts=6,
+    retry_backoff_seconds=2.0,
+    retry_notifier=None,
+):
+    """Download one hour with bounded retries for transient transport errors."""
+    url = dukascopy_hour_url(symbol, hour_start)
+    return _download_archive(
+        url=url,
+        label=f"{symbol} {hour_start}",
+        timeout=timeout,
+        max_attempts=max_attempts,
+        retry_backoff_seconds=retry_backoff_seconds,
+        retry_notifier=retry_notifier,
+    )
+
+
+def download_m1_day(
+    symbol,
+    day_start,
+    side,
+    timeout=90,
+    *,
+    max_attempts=6,
+    retry_backoff_seconds=2.0,
+    retry_notifier=None,
+):
+    """Download one candidate daily M1 BID or ASK archive."""
+    url = dukascopy_m1_day_url(symbol, day_start, side)
+    return _download_archive(
+        url=url,
+        label=f"{symbol} {day_start} {str(side).upper()} M1",
+        timeout=timeout,
+        max_attempts=max_attempts,
+        retry_backoff_seconds=retry_backoff_seconds,
+        retry_notifier=retry_notifier,
+    )
 
 
 def decode_bi5_ticks(payload, *, symbol, hour_start):
@@ -215,6 +278,124 @@ def decode_bi5_ticks(payload, *, symbol, hour_start):
             }
         )
     return ticks
+
+
+def decode_bi5_m1_candles(payload, *, symbol, day_start, side):
+    """Decode a candidate Dukascopy daily BID or ASK M1 artifact.
+
+    The assumed record is UTC-second offset, open, close, low, high integer
+    prices, and float volume.  A real-data tick comparison must approve this
+    candidate adapter before it can feed multi-year research.
+    """
+    if symbol not in PRICE_SCALES:
+        raise ValueError(f"Unsupported V4 research symbol: {symbol}")
+    side = str(side).lower()
+    if side not in OFFER_SIDES:
+        raise ValueError(f"Unsupported Dukascopy offer side: {side}")
+    day_start = parse_utc(day_start)
+    if day_start != day_start.replace(hour=0, minute=0, second=0, microsecond=0):
+        raise ValueError(f"BI5 candle day is not UTC-midnight aligned: {day_start}")
+    if not payload:
+        return []
+
+    try:
+        raw = lzma.decompress(payload)
+    except lzma.LZMAError as error:
+        raise RuntimeError(
+            f"Invalid Dukascopy M1 BI5 compression for {symbol} {day_start} {side}"
+        ) from error
+
+    if len(raw) % CANDLE_RECORD.size:
+        raise RuntimeError(
+            f"Truncated Dukascopy M1 BI5 record for {symbol} {day_start} {side}: "
+            f"{len(raw)} bytes"
+        )
+
+    scale = PRICE_SCALES[symbol]
+    rows = []
+    previous_seconds = -1
+    for offset in range(0, len(raw), CANDLE_RECORD.size):
+        (
+            seconds,
+            open_raw,
+            close_raw,
+            low_raw,
+            high_raw,
+            volume,
+        ) = CANDLE_RECORD.unpack_from(raw, offset)
+        if seconds >= 86_400 or seconds % 60 or seconds <= previous_seconds:
+            raise RuntimeError(
+                f"Invalid/out-of-order Dukascopy M1 offset for "
+                f"{symbol} {day_start} {side}: {seconds}"
+            )
+        previous_seconds = seconds
+        ohlc = {
+            "open": open_raw / scale,
+            "high": high_raw / scale,
+            "low": low_raw / scale,
+            "close": close_raw / scale,
+        }
+        values = tuple(ohlc[field] for field in OHLC_FIELDS) + (float(volume),)
+        if not all(math.isfinite(value) and value >= 0 for value in values):
+            raise RuntimeError(
+                f"Invalid Dukascopy M1 value for {symbol} {day_start} {side}"
+            )
+        if any(ohlc[field] <= 0 for field in OHLC_FIELDS) or invalid_geometry(ohlc):
+            raise RuntimeError(
+                f"Invalid Dukascopy M1 geometry for {symbol} {day_start} "
+                f"{side} at {seconds}"
+            )
+        rows.append(
+            {
+                "timestamp": day_start + timedelta(seconds=seconds),
+                "side": side,
+                "ohlc": ohlc,
+                "volume": float(volume),
+            }
+        )
+    return rows
+
+
+def merge_bid_ask_m1(bid_rows, ask_rows):
+    """Merge aligned daily BID/ASK bars without inventing missing minutes."""
+    if any(str(row.get("side", "")).lower() != "bid" for row in bid_rows):
+        raise RuntimeError("Daily M1 BID collection contains a non-BID row")
+    if any(str(row.get("side", "")).lower() != "ask" for row in ask_rows):
+        raise RuntimeError("Daily M1 ASK collection contains a non-ASK row")
+    bid_by_time = {parse_utc(row["timestamp"]): row for row in bid_rows}
+    ask_by_time = {parse_utc(row["timestamp"]): row for row in ask_rows}
+    if len(bid_by_time) != len(bid_rows) or len(ask_by_time) != len(ask_rows):
+        raise RuntimeError("Duplicate daily M1 BID/ASK timestamp")
+    if set(bid_by_time) != set(ask_by_time):
+        missing_bid = sorted(set(ask_by_time) - set(bid_by_time))
+        missing_ask = sorted(set(bid_by_time) - set(ask_by_time))
+        raise RuntimeError(
+            f"Daily M1 BID/ASK timestamps differ: "
+            f"missing_bid={missing_bid[:5]} missing_ask={missing_ask[:5]}"
+        )
+
+    result = []
+    for timestamp in sorted(bid_by_time):
+        bid = bid_by_time[timestamp]["ohlc"]
+        ask = ask_by_time[timestamp]["ohlc"]
+        mid = {
+            field: (float(bid[field]) + float(ask[field])) / 2.0
+            for field in OHLC_FIELDS
+        }
+        row = {
+            "timestamp": timestamp,
+            "bid": dict(bid),
+            "ask": dict(ask),
+            "mid": mid,
+            "bid_volume": float(bid_by_time[timestamp]["volume"]),
+            "ask_volume": float(ask_by_time[timestamp]["volume"]),
+            "source_bar_count": 2,
+            "aggregation_policy": "DAILY_M1_BID_ASK_MID_PROXY",
+        }
+        _validate_sides(row, f"daily M1 {timestamp}")
+        result.append(row)
+    validate_m1_rows(result)
+    return result
 
 
 def _new_side_ohlc(price):
@@ -309,7 +490,9 @@ def validate_m1_rows(rows):
         if previous is not None and timestamp <= previous:
             raise RuntimeError(f"Duplicate/out-of-order M1 timestamp: {timestamp}")
         previous = timestamp
-        if int(row["tick_count"]) <= 0:
+        tick_count = int(row.get("tick_count", 0))
+        source_bar_count = int(row.get("source_bar_count", 0))
+        if tick_count <= 0 and source_bar_count <= 0:
             raise RuntimeError(f"Empty M1 candle at {timestamp}")
         _validate_sides(row, f"M1 row {index} {timestamp}")
 
@@ -448,7 +631,11 @@ def aggregate_m1_to_m30(rows):
             "ask": _aggregate_side(bucket_rows, "ask"),
             "mid": _aggregate_side(bucket_rows, "mid"),
             "m1_rows": len(bucket_rows),
-            "tick_count": sum(int(item["tick_count"]) for item in bucket_rows),
+            "tick_count": sum(int(item.get("tick_count", 0)) for item in bucket_rows),
+            "source_bar_count": sum(
+                int(item.get("source_bar_count", 0))
+                for item in bucket_rows
+            ),
             "first_m1_time": observed[0],
             "last_m1_time": observed[-1],
             "max_internal_gap_minutes": max(gaps, default=0),
