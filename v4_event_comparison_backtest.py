@@ -3,14 +3,12 @@ import sqlite3
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
-from config import (
-    MAX_TRADE_MINUTES,
-    TAKE_PROFIT_R_MULTIPLE,
-    get_instrument_config,
-)
 from v4_event_strategy import (
+    HOLDOUT_START,
     SETUP_BREAKOUT_RETEST,
     SETUP_FAKEOUT,
+    TRAIN_END,
+    TRAIN_START,
     generate_v4_events,
 )
 
@@ -20,15 +18,36 @@ TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 SYMBOLS = ("EUR/USD", "GBP/USD")
 M30_MINUTES = 30
 
-TRAIN_START = datetime(2021, 1, 1)
-TRAIN_END = datetime(2025, 1, 1)
-HOLDOUT_START = datetime(2026, 1, 1)
+# Frozen V4 execution assumptions. Research results must not change when the
+# production strategy's config.py is adjusted later.
+TAKE_PROFIT_R_MULTIPLE = 1.5
+MAX_TRADE_MINUTES = 180
+V4_INSTRUMENTS = {
+    "EUR/USD": {
+        "pip_size": 0.0001,
+        "min_stop_pips": 5.0,
+        "assumed_spread_pips": 1.0,
+    },
+    "GBP/USD": {
+        "pip_size": 0.0001,
+        "min_stop_pips": 5.0,
+        "assumed_spread_pips": 1.0,
+    },
+}
+
 READ_OPEN_LIMIT = HOLDOUT_START - timedelta(minutes=M30_MINUTES)
 
 SETUPS = (
     SETUP_BREAKOUT_RETEST,
     SETUP_FAKEOUT,
 )
+
+
+def get_v4_instrument_config(symbol):
+    try:
+        return V4_INSTRUMENTS[symbol]
+    except KeyError as error:
+        raise ValueError(f"Unknown V4 instrument: {symbol}") from error
 
 
 def parse_time(value):
@@ -116,16 +135,25 @@ def cohort_for_entry(entry_time):
 
 
 def execute_trade(*, rows, index_by_time, event, symbol, split_end):
-    instrument = get_instrument_config(symbol)
+    instrument = get_v4_instrument_config(symbol)
     pip_size = float(instrument["pip_size"])
     spread_pips = float(instrument["assumed_spread_pips"])
     min_stop_pips = float(instrument["min_stop_pips"])
 
     direction = event["direction"]
-    entry_price = float(event["entry_price"])
+    signal_price = float(event["entry_price"])
     entry_time = event["signal_time"]
     raw_stop = float(event["stop_price"])
     min_stop_distance = min_stop_pips * pip_size
+
+    deadline = entry_time + timedelta(minutes=MAX_TRADE_MINUTES)
+    if deadline >= split_end:
+        return {"reason": "BOUNDARY_GUARD", "r": None, "exit_time": None}
+
+    entry_index = index_by_time.get(entry_time)
+    if entry_index is None:
+        return {"reason": "DATA_GAP", "r": None, "exit_time": None}
+    entry_price = float(rows[entry_index]["open"])
 
     if direction == "BUY":
         structural_distance = entry_price - raw_stop
@@ -141,10 +169,6 @@ def execute_trade(*, rows, index_by_time, event, symbol, split_end):
         stop_distance = max(structural_distance, min_stop_distance)
         stop_loss = entry_price + stop_distance
         take_profit = entry_price - stop_distance * float(TAKE_PROFIT_R_MULTIPLE)
-
-    deadline = entry_time + timedelta(minutes=MAX_TRADE_MINUTES)
-    if deadline >= split_end:
-        return {"reason": "BOUNDARY_GUARD", "r": None, "exit_time": None}
 
     risk_pips = stop_distance / pip_size
     max_bars = max(1, math.ceil(MAX_TRADE_MINUTES / M30_MINUTES))
@@ -195,6 +219,8 @@ def execute_trade(*, rows, index_by_time, event, symbol, split_end):
             "reason": reason,
             "r": net_pips / risk_pips,
             "exit_time": candle_close,
+            "signal_price": signal_price,
+            "entry_price": entry_price,
         }
 
     raise RuntimeError("execution loop ended without result")
@@ -202,7 +228,13 @@ def execute_trade(*, rows, index_by_time, event, symbol, split_end):
 
 def metrics(records):
     evaluated = [row for row in records if row.get("r") is not None]
-    evaluated.sort(key=lambda row: (row["signal_time"], row["symbol"]))
+    evaluated.sort(
+        key=lambda row: (
+            row.get("exit_time", row["signal_time"]),
+            row["symbol"],
+            row["signal_time"],
+        )
+    )
 
     if not evaluated:
         return {
@@ -315,8 +347,11 @@ def build_records():
                             "year": signal_time.year,
                             "direction": event["direction"],
                             "signal_time": signal_time,
+                            "exit_time": trade.get("exit_time"),
                             "reason": trade["reason"],
                             "r": trade.get("r"),
+                            "signal_price": event["entry_price"],
+                            "entry_price": trade.get("entry_price"),
                         }
                     )
 
@@ -464,7 +499,7 @@ def main():
     )
     print("No H1/EMA/RSI/session/Asia filter | fixed rules | no parameter selection")
     print(
-        f"Execution: structural SL | TP={TAKE_PROFIT_R_MULTIPLE:.2f}R | "
+        f"Execution: next-M30-open fill | structural SL | TP={TAKE_PROFIT_R_MULTIPLE:.2f}R | "
         f"max trade={MAX_TRADE_MINUTES}m | one open trade per setup per symbol"
     )
 

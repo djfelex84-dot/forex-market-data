@@ -12,7 +12,9 @@ from datetime import datetime, timedelta
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 M30_MINUTES = 30
 ATR_PERIOD = 14
+TRAIN_START = datetime(2021, 1, 1)
 TRAIN_END = datetime(2025, 1, 1)
+HOLDOUT_START = datetime(2026, 1, 1)
 
 RANGE_LOOKBACK = 12
 BREAKOUT_MIN_ATR = 0.10
@@ -45,7 +47,14 @@ def _signal_close_time(row):
 
 def _setup_partition(row):
     """Keep pending setup state on only one side of the research split."""
-    return "TRAIN" if _signal_close_time(row) < TRAIN_END else "VALIDATION"
+    signal_close = _signal_close_time(row)
+    if signal_close < TRAIN_START:
+        return "PRE_TRAIN"
+    if signal_close < TRAIN_END:
+        return "TRAIN"
+    if signal_close < HOLDOUT_START:
+        return "VALIDATION"
+    return "HOLDOUT"
 
 
 def _is_contiguous(previous_row, current_row):
