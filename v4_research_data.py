@@ -11,11 +11,12 @@ import json
 import lzma
 import math
 import struct
+import time
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
@@ -27,6 +28,8 @@ PRICE_SCALES = {
     "EUR/USD": 100_000.0,
     "GBP/USD": 100_000.0,
 }
+RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
+DOWNLOAD_USER_AGENT = "AS-V4-Research/1.0"
 
 
 def parse_utc(value):
@@ -86,22 +89,63 @@ def dukascopy_hour_url(symbol, hour_start):
     )
 
 
-def download_hour(symbol, hour_start, timeout=90):
+def download_hour(
+    symbol,
+    hour_start,
+    timeout=90,
+    *,
+    max_attempts=6,
+    retry_backoff_seconds=2.0,
+    retry_notifier=None,
+):
+    """Download one hour with bounded retries for transient transport errors."""
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be positive")
+    if retry_backoff_seconds < 0:
+        raise ValueError("retry_backoff_seconds cannot be negative")
+
     url = dukascopy_hour_url(symbol, hour_start)
-    try:
-        with urlopen(url, timeout=timeout) as response:
-            return response.read(), url
-    except HTTPError as error:
-        if error.code == 404:
-            return b"", url
-        raise RuntimeError(
-            f"Dukascopy HTTP {error.code} for {symbol} {hour_start}"
-        ) from None
-    except URLError as error:
-        raise RuntimeError(
-            f"Dukascopy connection failed for {symbol} {hour_start}: "
-            f"{error.reason}"
-        ) from None
+    request = Request(
+        url,
+        headers={
+            "Accept": "application/octet-stream",
+            "User-Agent": DOWNLOAD_USER_AGENT,
+        },
+    )
+
+    for attempt in range(1, max_attempts + 1):
+        failure = None
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return response.read(), url
+        except HTTPError as error:
+            if error.code == 404:
+                return b"", url
+            if error.code not in RETRYABLE_HTTP_CODES:
+                raise RuntimeError(
+                    f"Dukascopy HTTP {error.code} for {symbol} {hour_start}"
+                ) from None
+            failure = f"HTTP {error.code}"
+        except (URLError, ConnectionResetError, TimeoutError, OSError) as error:
+            reason = getattr(error, "reason", error)
+            failure = f"connection error: {reason}"
+
+        if attempt == max_attempts:
+            raise RuntimeError(
+                f"Dukascopy download failed after {max_attempts} attempts for "
+                f"{symbol} {hour_start}: {failure}"
+            ) from None
+
+        delay = min(
+            retry_backoff_seconds * (2 ** (attempt - 1)),
+            30.0,
+        )
+        if retry_notifier is not None:
+            retry_notifier(attempt, max_attempts, delay, failure)
+        if delay:
+            time.sleep(delay)
+
+    raise AssertionError("Unreachable Dukascopy download state")
 
 
 def decode_bi5_ticks(payload, *, symbol, hour_start):

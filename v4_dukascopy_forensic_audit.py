@@ -27,7 +27,7 @@ READ_LIMIT = datetime(2025, 12, 31, 23, 30)
 PIP_SIZE = 0.0001
 WINDOW_BEFORE = timedelta(minutes=60)
 WINDOW_AFTER = timedelta(minutes=90)
-REQUEST_INTERVAL_SECONDS = 0.25
+REQUEST_INTERVAL_SECONDS = 1.0
 OUTPUT_DIR = Path("/tmp/v4_dukascopy_forensic")
 MANIFEST_PATH = OUTPUT_DIR / "manifest.json"
 
@@ -117,7 +117,18 @@ def fetch_or_read_hour(hour):
         payload = path.read_bytes()
         source = "CACHE"
     else:
-        payload, returned_url = research_data.download_hour(SYMBOL, hour)
+        def retry_notice(attempt, max_attempts, delay, reason):
+            print(
+                f"RETRY {attempt}/{max_attempts} | {hour} | "
+                f"Wait={delay:.1f}s | {reason}",
+                flush=True,
+            )
+
+        payload, returned_url = research_data.download_hour(
+            SYMBOL,
+            hour,
+            retry_notifier=retry_notice,
+        )
         if returned_url != url:
             raise RuntimeError("Dukascopy URL mismatch")
         if not payload:

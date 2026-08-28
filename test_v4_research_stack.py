@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.error import URLError
 from unittest.mock import patch
 
 import v4_dukascopy_forensic_audit as forensic
@@ -85,6 +86,19 @@ def event(signal_time, *, direction="BUY"):
 
 
 class DukascopyDataTests(unittest.TestCase):
+    class FakeResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def read(self):
+            return self.payload
+
     def test_hour_url_uses_zero_based_month_and_aligned_hour(self):
         result = research_data.dukascopy_hour_url(
             "EUR/USD",
@@ -134,6 +148,47 @@ class DukascopyDataTests(unittest.TestCase):
                 symbol="EUR/USD",
                 hour_start=datetime(2024, 11, 28, 12),
             )
+
+    def test_transient_download_error_retries_then_succeeds(self):
+        notices = []
+        reset = URLError(ConnectionResetError(104, "reset by peer"))
+
+        with patch.object(
+            research_data,
+            "urlopen",
+            side_effect=[reset, self.FakeResponse(b"payload")],
+        ) as mocked_open, patch.object(research_data.time, "sleep") as mocked_sleep:
+            payload, url = research_data.download_hour(
+                "EUR/USD",
+                datetime(2024, 11, 28, 12),
+                max_attempts=2,
+                retry_backoff_seconds=0.5,
+                retry_notifier=lambda *notice: notices.append(notice),
+            )
+
+        self.assertEqual(b"payload", payload)
+        self.assertTrue(url.endswith("/2024/10/28/12h_ticks.bi5"))
+        self.assertEqual(2, mocked_open.call_count)
+        mocked_sleep.assert_called_once_with(0.5)
+        self.assertEqual(1, notices[0][0])
+        self.assertEqual(2, notices[0][1])
+        self.assertIn("reset by peer", notices[0][3])
+
+    def test_transient_download_error_exhaustion_fails_closed(self):
+        reset = URLError(ConnectionResetError(104, "reset by peer"))
+
+        with patch.object(
+            research_data,
+            "urlopen",
+            side_effect=[reset, reset],
+        ), patch.object(research_data.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, "after 2 attempts"):
+                research_data.download_hour(
+                    "EUR/USD",
+                    datetime(2024, 11, 28, 12),
+                    max_attempts=2,
+                    retry_backoff_seconds=0,
+                )
 
     def test_tick_midpoint_is_aggregated_at_tick_level(self):
         start = datetime(2024, 11, 28, 12)
