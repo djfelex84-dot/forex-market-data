@@ -1,5 +1,6 @@
 import math
 import sqlite3
+from bisect import bisect_right
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 
@@ -24,6 +25,7 @@ TRAIN_START = datetime(2021, 1, 1)
 TRAIN_END = datetime(2025, 1, 1)
 HOLDOUT_START = datetime(2026, 1, 1)
 READ_OPEN_LIMIT = HOLDOUT_START - timedelta(minutes=M30_MINUTES)
+PROGRESS_EVERY = 5000
 
 
 def parse_time(value):
@@ -41,27 +43,31 @@ def load_m30(connection, symbol):
         (symbol, READ_OPEN_LIMIT.strftime(TIME_FORMAT)),
     ).fetchall()
 
-    return [
-        {
-            "datetime": row[0],
-            "open": float(row[1]),
-            "high": float(row[2]),
-            "low": float(row[3]),
-            "close": float(row[4]),
-        }
-        for row in rows
-    ]
+    result = []
+    for row in rows:
+        timestamp = parse_time(row[0])
+        result.append(
+            {
+                "datetime": row[0],
+                "_time": timestamp,
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "close": float(row[4]),
+            }
+        )
+    return result
 
 
 def build_h1_from_m30(rows):
-    by_time = {parse_time(row["datetime"]): row for row in rows}
+    by_time = {row["_time"]: row for row in rows}
     h1 = []
 
     for open_time in sorted(by_time):
         if open_time.minute != 0:
             continue
 
-        second_time = open_time + timedelta(minutes=30)
+        second_time = open_time + timedelta(minutes=M30_MINUTES)
         first = by_time.get(open_time)
         second = by_time.get(second_time)
 
@@ -71,6 +77,8 @@ def build_h1_from_m30(rows):
         h1.append(
             {
                 "datetime": open_time.strftime(TIME_FORMAT),
+                "_time": open_time,
+                "_close_time": open_time + timedelta(minutes=H1_MINUTES),
                 "open": first["open"],
                 "high": max(first["high"], second["high"]),
                 "low": min(first["low"], second["low"]),
@@ -81,13 +89,10 @@ def build_h1_from_m30(rows):
     return h1
 
 
-def safe_h1_window(h1_rows, signal_close):
-    safe = [
-        row
-        for row in h1_rows
-        if parse_time(row["datetime"]) + timedelta(minutes=H1_MINUTES) <= signal_close
-    ]
-    return safe[-ANALYSIS_WINDOW_H1:]
+def safe_h1_window(h1_rows, h1_close_times, signal_close):
+    end = bisect_right(h1_close_times, signal_close)
+    start = max(0, end - ANALYSIS_WINDOW_H1)
+    return h1_rows[start:end]
 
 
 def cohort_for_entry(entry_time):
@@ -108,7 +113,7 @@ def execute_m30_trade(*, rows, index_by_time, signal_index, signal, atr_value, s
 
     signal_row = rows[signal_index]
     entry_price = float(signal_row["close"])
-    signal_open = parse_time(signal_row["datetime"])
+    signal_open = signal_row["_time"]
     entry_time = signal_open + timedelta(minutes=M30_MINUTES)
     deadline = entry_time + timedelta(minutes=MAX_TRADE_MINUTES)
 
@@ -250,14 +255,24 @@ def build_records():
         for symbol in SYMBOLS:
             rows = load_m30(connection, symbol)
             h1_rows = build_h1_from_m30(rows)
-            index_by_time = {parse_time(row["datetime"]): i for i, row in enumerate(rows)}
+            h1_close_times = [row["_close_time"] for row in h1_rows]
+            index_by_time = {row["_time"]: i for i, row in enumerate(rows)}
             next_allowed_entry = datetime.min
+            symbol_signal_count = 0
 
             print(f"BUILDING {symbol} | M30={len(rows)} | H1={len(h1_rows)}", flush=True)
 
             for index in range(MIN_BARS - 1, len(rows)):
+                if index > 0 and index % PROGRESS_EVERY == 0:
+                    pct = index / max(1, len(rows)) * 100.0
+                    print(
+                        f"PROGRESS {symbol} | {index}/{len(rows)} "
+                        f"({pct:.1f}%) | Signals={symbol_signal_count}",
+                        flush=True,
+                    )
+
                 row = rows[index]
-                signal_open = parse_time(row["datetime"])
+                signal_open = row["_time"]
                 signal_close = signal_open + timedelta(minutes=M30_MINUTES)
 
                 if signal_close >= HOLDOUT_START:
@@ -268,7 +283,7 @@ def build_records():
                     continue
 
                 m30_window = rows[max(0, index - ANALYSIS_WINDOW_M30 + 1):index + 1]
-                h1_window = safe_h1_window(h1_rows, signal_close)
+                h1_window = safe_h1_window(h1_rows, h1_close_times, signal_close)
 
                 if len(m30_window) < MIN_BARS or len(h1_window) < MIN_BARS:
                     diagnostics[symbol]["NO_DATA"] += 1
@@ -318,6 +333,12 @@ def build_records():
                         "r": trade.get("r"),
                     }
                 )
+                symbol_signal_count += 1
+
+            print(
+                f"DONE {symbol} | Signals={symbol_signal_count}",
+                flush=True,
+            )
     finally:
         connection.close()
 
