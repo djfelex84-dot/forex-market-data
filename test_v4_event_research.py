@@ -104,6 +104,58 @@ class StrategyScannerTests(unittest.TestCase):
         self.assertEqual("PDL::2021-01-04", events[0]["source"])
         self.assertLess(events[0]["stop_price"], 1.0988)
 
+    def test_breakout_pending_state_resets_at_train_validation_boundary(self):
+        start = strategy.TRAIN_END - timedelta(hours=14)
+        rows = range_rows(start, strategy.ATR_PERIOD + strategy.RANGE_LOOKBACK)
+        breakout_time = strategy.TRAIN_END - timedelta(hours=1)
+        rows.extend(
+            [
+                candle(breakout_time, 1.1005, 1.1020, 1.1004, 1.1018),
+                candle(
+                    breakout_time + timedelta(minutes=30),
+                    1.1017,
+                    1.1019,
+                    1.10095,
+                    1.1013,
+                ),
+                candle(
+                    breakout_time + timedelta(minutes=60),
+                    1.1012,
+                    1.1021,
+                    1.1010,
+                    1.1020,
+                ),
+            ]
+        )
+
+        scan = strategy.generate_v4_events(rows)
+
+        self.assertEqual([], scan[strategy.SETUP_BREAKOUT_RETEST])
+        self.assertEqual(
+            1,
+            scan["diagnostics"][strategy.SETUP_BREAKOUT_RETEST]["RESET_SPLIT_BOUNDARY"],
+        )
+
+    def test_fakeout_pending_state_resets_at_train_validation_boundary(self):
+        rows = range_rows(datetime(2024, 12, 30), 48)
+        day_two = strategy.TRAIN_END - timedelta(days=1)
+        rows.extend(range_rows(day_two, 46, high=1.1008, low=1.0992))
+        sweep_time = strategy.TRAIN_END - timedelta(hours=1)
+        rows.extend(
+            [
+                candle(sweep_time, 1.0993, 1.0996, 1.0987, 1.0994),
+                candle(sweep_time + timedelta(minutes=30), 1.0994, 1.1001, 1.0993, 1.1000),
+            ]
+        )
+
+        scan = strategy.generate_v4_events(rows)
+
+        self.assertEqual([], scan[strategy.SETUP_FAKEOUT])
+        self.assertEqual(
+            1,
+            scan["diagnostics"][strategy.SETUP_FAKEOUT]["RESET_SPLIT_BOUNDARY"],
+        )
+
     def test_short_sunday_does_not_replace_friday_as_previous_day(self):
         friday = datetime(2021, 1, 1)
         rows = range_rows(friday, 48, high=1.1050, low=1.0950)

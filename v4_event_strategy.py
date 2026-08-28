@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 M30_MINUTES = 30
 ATR_PERIOD = 14
+TRAIN_END = datetime(2025, 1, 1)
 
 RANGE_LOOKBACK = 12
 BREAKOUT_MIN_ATR = 0.10
@@ -40,6 +41,11 @@ def _row_time(row):
 
 def _signal_close_time(row):
     return _row_time(row) + timedelta(minutes=M30_MINUTES)
+
+
+def _setup_partition(row):
+    """Keep pending setup state on only one side of the research split."""
+    return "TRAIN" if _signal_close_time(row) < TRAIN_END else "VALIDATION"
 
 
 def _is_contiguous(previous_row, current_row):
@@ -129,8 +135,16 @@ def _scan_breakout_retest(rows, atr_values):
     events = []
     diagnostics = Counter()
     pending = None
+    previous_partition = None
 
     for index, row in enumerate(rows):
+        partition = _setup_partition(row)
+        if previous_partition is not None and partition != previous_partition:
+            if pending is not None:
+                diagnostics["RESET_SPLIT_BOUNDARY"] += 1
+            pending = None
+        previous_partition = partition
+
         atr_value = atr_values[index]
         if atr_value is None or atr_value <= 0:
             continue
@@ -280,9 +294,17 @@ def _scan_fakeouts(rows, atr_values):
     diagnostics = Counter()
     previous_levels = _previous_day_levels(rows)
     pending = None
+    previous_partition = None
     used_level_keys = set()
 
     for index, row in enumerate(rows):
+        partition = _setup_partition(row)
+        if previous_partition is not None and partition != previous_partition:
+            if pending is not None:
+                diagnostics["RESET_SPLIT_BOUNDARY"] += 1
+            pending = None
+        previous_partition = partition
+
         atr_value = atr_values[index]
         if atr_value is None or atr_value <= 0:
             continue
