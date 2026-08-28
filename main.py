@@ -80,6 +80,42 @@ except Exception as error:
     )
 
 
+MTF_SHADOW_TRADES_AVAILABLE = False
+MTF_SHADOW_TRADES_READY = False
+MTF_SHADOW_TRADES_IMPORT_ERROR = None
+
+try:
+    from mtf_shadow_trades import (
+        init_mtf_shadow_trade_storage,
+        evaluate_mtf_shadow_trades,
+    )
+
+    MTF_SHADOW_TRADES_AVAILABLE = True
+
+except Exception as error:
+    MTF_SHADOW_TRADES_IMPORT_ERROR = (
+        f"{type(error).__name__}: "
+        f"{error}"
+    )
+
+
+MTF_SHADOW_RECONCILE_AVAILABLE = False
+MTF_SHADOW_RECONCILE_IMPORT_ERROR = None
+
+try:
+    from mtf_shadow_reconcile import (
+        reconcile_mtf_shadow_trades,
+    )
+
+    MTF_SHADOW_RECONCILE_AVAILABLE = True
+
+except Exception as error:
+    MTF_SHADOW_RECONCILE_IMPORT_ERROR = (
+        f"{type(error).__name__}: "
+        f"{error}"
+    )
+
+
 from storage import (
     init_db,
     save_analysis,
@@ -274,6 +310,15 @@ def format_optional_pips(
         return "n/a"
 
     return f"{float(value):.2f}"
+
+
+def format_optional_r(
+    value,
+):
+    if value is None:
+        return "n/a"
+
+    return f"{float(value):.2f}R"
 
 
 def format_result(
@@ -652,6 +697,47 @@ def initialize_mtf_shadow():
         return False
 
 
+def initialize_mtf_shadow_trades():
+    global MTF_SHADOW_TRADES_READY
+
+    if not MTF_SHADOW_TRADES_AVAILABLE:
+        print(
+            "MTF SHADOW TRADES DISABLED | "
+            f"Import error: "
+            f"{MTF_SHADOW_TRADES_IMPORT_ERROR}",
+            flush=True,
+        )
+
+        return False
+
+    try:
+        init_mtf_shadow_trade_storage()
+
+        MTF_SHADOW_TRADES_READY = True
+
+        print(
+            "MTF shadow trades: ready | "
+            "Signal=30min | "
+            "Execution=5min | "
+            "Telegram=disabled",
+            flush=True,
+        )
+
+        return True
+
+    except Exception as error:
+        MTF_SHADOW_TRADES_READY = False
+
+        print(
+            "MTF SHADOW TRADES INIT ERROR | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+        return False
+
+
 def process_signal_quality(
     symbol,
     candles,
@@ -858,46 +944,6 @@ def process_mtf_shadow(
             )
         )
 
-        action = shadow_result.get(
-            "action"
-        )
-
-        if action == "ALREADY_PROCESSED":
-            return shadow_result
-
-        if shadow_result.get(
-            "created"
-        ):
-            print(
-                "MTF SHADOW NEW SIGNAL | "
-                f"{symbol} | "
-                f"ID={shadow_result.get('signal_id')} | "
-                f"Candle="
-                f"{shadow_result.get('candle_time')} | "
-                f"Direction="
-                f"{shadow_result.get('direction')} | "
-                f"Alignment="
-                f"{mtf_result.get('direction_alignment')} | "
-                f"Total="
-                f"{count_mtf_shadow_signals(symbol)} | "
-                "Telegram=NO",
-                flush=True,
-            )
-
-        else:
-            print(
-                "MTF SHADOW | "
-                f"{symbol} | "
-                f"Action={action} | "
-                f"Candle="
-                f"{shadow_result.get('candle_time')} | "
-                f"Direction="
-                f"{shadow_result.get('direction')}",
-                flush=True,
-            )
-
-        return shadow_result
-
     except Exception as error:
         print(
             "MTF SHADOW ERROR | "
@@ -908,6 +954,208 @@ def process_mtf_shadow(
         )
 
         return None
+
+    action = shadow_result.get(
+        "action"
+    )
+
+    if action == "ALREADY_PROCESSED":
+        return shadow_result
+
+    if shadow_result.get(
+        "created"
+    ):
+        total = "n/a"
+
+        try:
+            total = (
+                count_mtf_shadow_signals(
+                    symbol
+                )
+            )
+
+        except Exception as error:
+            print(
+                "MTF SHADOW COUNT ERROR | "
+                f"{symbol} | "
+                f"{type(error).__name__}: "
+                f"{error}",
+                flush=True,
+            )
+
+        print(
+            "MTF SHADOW NEW SIGNAL | "
+            f"{symbol} | "
+            f"ID={shadow_result.get('signal_id')} | "
+            f"Candle="
+            f"{shadow_result.get('candle_time')} | "
+            f"Direction="
+            f"{shadow_result.get('direction')} | "
+            f"Alignment="
+            f"{mtf_result.get('direction_alignment')} | "
+            f"Total={total} | "
+            "Telegram=NO",
+            flush=True,
+        )
+
+    else:
+        print(
+            "MTF SHADOW | "
+            f"{symbol} | "
+            f"Action={action} | "
+            f"Candle="
+            f"{shadow_result.get('candle_time')} | "
+            f"Direction="
+            f"{shadow_result.get('direction')}",
+            flush=True,
+        )
+
+    return shadow_result
+
+
+def process_mtf_shadow_reconciliation(
+    symbol=None,
+):
+    if (
+        not MTF_SHADOW_AVAILABLE
+        or not MTF_SHADOW_READY
+        or not MTF_SHADOW_TRADES_AVAILABLE
+        or not MTF_SHADOW_TRADES_READY
+        or not MTF_SHADOW_RECONCILE_AVAILABLE
+    ):
+        return None
+
+    label = (
+        symbol
+        if symbol is not None
+        else "ALL"
+    )
+
+    try:
+        result = (
+            reconcile_mtf_shadow_trades(
+                symbol=symbol,
+            )
+        )
+
+    except Exception as error:
+        print(
+            "MTF SHADOW RECONCILE ERROR | "
+            f"{label} | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+        return None
+
+    if (
+        result.get("checked", 0) > 0
+        or result.get("errors", 0) > 0
+    ):
+        print(
+            "MTF SHADOW RECONCILE | "
+            f"{label} | "
+            f"Checked={result.get('checked', 0)} | "
+            f"Created={result.get('created', 0)} | "
+            f"Duplicates={result.get('duplicates', 0)} | "
+            f"Errors={result.get('errors', 0)}",
+            flush=True,
+        )
+
+    for item in result.get(
+        "items",
+        [],
+    ):
+        if item.get(
+            "created"
+        ):
+            print(
+                "MTF SHADOW TRADE CREATED | "
+                f"{item.get('symbol')} | "
+                f"TradeID={item.get('trade_id')} | "
+                f"SignalID={item.get('signal_id')} | "
+                f"{item.get('signal')} | "
+                f"Entry={item.get('entry_price'):.5f} | "
+                f"SL={item.get('stop_loss'):.5f} | "
+                f"TP={item.get('take_profit'):.5f} | "
+                f"Risk={item.get('risk_pips'):.2f} pips | "
+                f"Reward={item.get('reward_pips'):.2f} pips | "
+                f"MaxHold={item.get('max_hold_minutes')}m | "
+                "Telegram=NO",
+                flush=True,
+            )
+
+        elif (
+            item.get(
+                "reason"
+            )
+            != "DUPLICATE"
+        ):
+            print(
+                "MTF SHADOW RECONCILE ITEM ERROR | "
+                f"SignalID={item.get('signal_id')} | "
+                f"Reason={item.get('reason')} | "
+                f"Error={item.get('error', 'n/a')}",
+                flush=True,
+            )
+
+    return result
+
+
+def process_mtf_shadow_trade_evaluation(
+    symbol,
+    candles,
+):
+    if (
+        not MTF_SHADOW_TRADES_AVAILABLE
+        or not MTF_SHADOW_TRADES_READY
+    ):
+        return []
+
+    try:
+        results = (
+            evaluate_mtf_shadow_trades(
+                candles,
+                symbol,
+            )
+        )
+
+    except Exception as error:
+        print(
+            "MTF SHADOW TRADE EVALUATION ERROR | "
+            f"{symbol} | "
+            f"{type(error).__name__}: "
+            f"{error}",
+            flush=True,
+        )
+
+        return []
+
+    for trade in results:
+        print(
+            "MTF SHADOW TRADE RESULT | "
+            f"{trade.get('symbol')} | "
+            f"TradeID={trade.get('trade_id')} | "
+            f"SignalID={trade.get('shadow_signal_id')} | "
+            f"{trade.get('signal')} | "
+            f"{trade.get('result')} | "
+            f"Gross="
+            f"{format_optional_pips(trade.get('gross_pips'))} pips | "
+            f"Net="
+            f"{format_optional_pips(trade.get('net_pips'))} pips | "
+            f"R="
+            f"{format_optional_r(trade.get('r'))} | "
+            f"MAE="
+            f"{format_optional_pips(trade.get('mae_pips'))} pips | "
+            f"MFE="
+            f"{format_optional_pips(trade.get('mfe_pips'))} pips | "
+            f"Candle={trade.get('candle_time')} | "
+            "Telegram=NO",
+            flush=True,
+        )
+
+    return results
 
 
 def analyze_symbol(
@@ -1096,6 +1344,15 @@ def analyze_symbol(
         created_at=created_at,
     )
 
+    process_mtf_shadow_reconciliation(
+        symbol=symbol,
+    )
+
+    process_mtf_shadow_trade_evaluation(
+        symbol=symbol,
+        candles=all_candles,
+    )
+
 
 def analyze_once():
     for symbol in SYMBOLS:
@@ -1210,6 +1467,8 @@ def main():
 
     initialize_mtf_shadow()
 
+    initialize_mtf_shadow_trades()
+
     if MULTI_TIMEFRAME_AVAILABLE:
         print(
             "MTF measurement bridge: ready | "
@@ -1234,6 +1493,30 @@ def main():
     init_15m_research_tables()
     init_15m_trade_tables()
     init_user_subscription_tables()
+
+    if (
+        MTF_SHADOW_RECONCILE_AVAILABLE
+        and MTF_SHADOW_READY
+        and MTF_SHADOW_TRADES_READY
+    ):
+        print(
+            "MTF shadow reconciliation: ready | "
+            "Source=signals | "
+            "Retry=enabled",
+            flush=True,
+        )
+
+        process_mtf_shadow_reconciliation()
+
+    else:
+        print(
+            "MTF shadow reconciliation: disabled | "
+            f"ImportError="
+            f"{MTF_SHADOW_RECONCILE_IMPORT_ERROR} | "
+            f"ShadowReady={MTF_SHADOW_READY} | "
+            f"TradesReady={MTF_SHADOW_TRADES_READY}",
+            flush=True,
+        )
 
     print(
         "Multi-market analysis engine started",
