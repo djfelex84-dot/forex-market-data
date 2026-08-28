@@ -6,7 +6,9 @@ are downloaded.  Results are evidence candidates under /tmp; this script does
 not repair, overlay, or materialize any database.
 """
 
+import fcntl
 import math
+import os
 import sqlite3
 import statistics
 import time
@@ -88,6 +90,26 @@ def raw_path(hour):
     )
 
 
+def acquire_run_lock():
+    """Fail closed when another copy of this audit is already running."""
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = OUTPUT_DIR / "run.lock"
+    handle = path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        raise RuntimeError(
+            f"Another V4 Dukascopy forensic audit already holds {path}"
+        ) from None
+
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid={os.getpid()}\n")
+    handle.flush()
+    return handle
+
+
 def fetch_or_read_hour(hour):
     path = raw_path(hour)
     url = research_data.dukascopy_hour_url(SYMBOL, hour)
@@ -136,7 +158,7 @@ def ohlc_tuple(row, side="mid"):
     return tuple(float(values[field]) for field in research_data.OHLC_FIELDS)
 
 
-def main():
+def run_audit():
     if not DB_PATH.is_file():
         raise RuntimeError(f"V4 database is missing: {DB_PATH}")
 
@@ -360,6 +382,15 @@ def main():
         )
 
     print("V4_DUKASCOPY_FORENSIC_AUDIT_OK")
+
+
+def main():
+    lock = acquire_run_lock()
+    try:
+        run_audit()
+    finally:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
 
 
 if __name__ == "__main__":

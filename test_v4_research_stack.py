@@ -254,6 +254,20 @@ class DukascopyDataTests(unittest.TestCase):
 
             self.assertFalse(forensic.raw_path(hour).exists())
 
+    def test_second_forensic_process_lock_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            forensic,
+            "OUTPUT_DIR",
+            Path(directory),
+        ):
+            first = forensic.acquire_run_lock()
+            try:
+                with self.assertRaisesRegex(RuntimeError, "already holds"):
+                    forensic.acquire_run_lock()
+            finally:
+                forensic.fcntl.flock(first.fileno(), forensic.fcntl.LOCK_UN)
+                first.close()
+
 
 class EventAnatomyTests(unittest.TestCase):
     def test_buy_event_reports_forward_mfe_mae_and_first_passage(self):
