@@ -35,6 +35,10 @@ RETRYABLE_HTTP_CODES = {429, 500, 502, 503, 504}
 DOWNLOAD_USER_AGENT = "AS-V4-Research/1.0"
 
 
+class TransientDukascopyDownloadError(RuntimeError):
+    """A retryable archive request exhausted its bounded retry budget."""
+
+
 def parse_utc(value):
     """Return a timezone-naive UTC datetime used by the existing V4 scanner."""
     if isinstance(value, datetime):
@@ -152,7 +156,7 @@ def _download_archive(
             failure = f"connection error: {reason}"
 
         if attempt == max_attempts:
-            raise RuntimeError(
+            raise TransientDukascopyDownloadError(
                 f"Dukascopy download failed after {max_attempts} attempts for "
                 f"{label}: {failure}"
             ) from None

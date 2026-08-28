@@ -12,7 +12,7 @@ import math
 import os
 import statistics
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import v4_research_data as research_data
@@ -20,7 +20,8 @@ import v4_research_data as research_data
 
 SYMBOL = "EUR/USD"
 PIP_SIZE = 0.0001
-REQUEST_INTERVAL_SECONDS = 5.0
+REQUEST_INTERVAL_SECONDS = 8.0
+EXHAUSTED_REQUEST_COOLDOWN_SECONDS = 30.0
 FORENSIC_DIR = Path("/tmp/v4_dukascopy_forensic")
 FORENSIC_MANIFEST = FORENSIC_DIR / "manifest.json"
 EXPECTED_FORENSIC_MANIFEST_SHA256 = (
@@ -323,6 +324,7 @@ def run_audit():
 
     daily_rows = []
     daily_artifacts = []
+    download_failures = []
     last_network_request = None
     total_requests = len(days) * 2
     position = 0
@@ -338,7 +340,22 @@ def run_audit():
                     time.sleep(wait_seconds)
             if not path.exists():
                 last_network_request = time.monotonic()
-            rows, artifact = fetch_or_read_day(day_start, side)
+            try:
+                rows, artifact = fetch_or_read_day(day_start, side)
+            except research_data.TransientDukascopyDownloadError as error:
+                failure = {
+                    "day_utc": day_start,
+                    "side": side,
+                    "error": str(error),
+                }
+                download_failures.append(failure)
+                print(
+                    f"DEFERRED {position:03d}/{total_requests:03d} | "
+                    f"{day_start:%Y-%m-%d} | {side.upper()} | {error}",
+                    flush=True,
+                )
+                time.sleep(EXHAUSTED_REQUEST_COOLDOWN_SECONDS)
+                continue
             side_rows[side] = rows
             daily_artifacts.append(artifact)
             print(
@@ -348,11 +365,57 @@ def run_audit():
                 f"{artifact['source']}",
                 flush=True,
             )
-        daily_rows.extend(
-            research_data.merge_bid_ask_m1(
-                side_rows["bid"],
-                side_rows["ask"],
+        if set(side_rows) == set(research_data.OFFER_SIDES):
+            daily_rows.extend(
+                research_data.merge_bid_ask_m1(
+                    side_rows["bid"],
+                    side_rows["ask"],
+                )
             )
+
+    if download_failures:
+        partial_manifest = {
+            "schema_version": 1,
+            "audit": "V4_DUKASCOPY_DAILY_M1_ADAPTER",
+            "status": "INCOMPLETE_TRANSIENT_DOWNLOADS",
+            "created_at_utc": datetime.now(timezone.utc).strftime(
+                research_data.TIME_FORMAT
+            ),
+            "symbol": SYMBOL,
+            "forensic_manifest": {
+                "path": str(FORENSIC_MANIFEST),
+                "sha256": forensic_hash,
+            },
+            "tick_artifacts": tick_artifacts,
+            "daily_artifacts_completed": daily_artifacts,
+            "download_failures": download_failures,
+            "adapter_accepted": False,
+            "rerun_safe": True,
+            "production_database_opened": False,
+            "production_database_changed": False,
+        }
+        manifest_hash = research_data.write_json_artifact(
+            MANIFEST_PATH,
+            partial_manifest,
+        )
+        print()
+        print("DOWNLOAD PASS INCOMPLETE")
+        print("=" * 118)
+        print(f"COMPLETED_ARTIFACTS={len(daily_artifacts)}/{total_requests}")
+        print(f"DEFERRED_ARTIFACTS={len(download_failures)}")
+        for failure in download_failures:
+            print(
+                f"DEFERRED | {failure['day_utc']:%Y-%m-%d} | "
+                f"{failure['side'].upper()}"
+            )
+        print(f"MANIFEST={MANIFEST_PATH}")
+        print(f"MANIFEST_SHA256={manifest_hash}")
+        print("RERUN_SAFE=True")
+        print("PRODUCTION_DATABASE_OPENED=False")
+        print("PRODUCTION_DATABASE_CHANGED=False")
+        raise RuntimeError(
+            "Some transient downloads were deferred; rerun the same command "
+            "to use the verified cache and fetch only missing artifacts"
         )
 
     daily_rows.sort(key=lambda row: row["timestamp"])
@@ -362,7 +425,9 @@ def run_audit():
     manifest = {
         "schema_version": 1,
         "audit": "V4_DUKASCOPY_DAILY_M1_ADAPTER",
-        "created_at_utc": datetime.utcnow().strftime(research_data.TIME_FORMAT),
+        "created_at_utc": datetime.now(timezone.utc).strftime(
+            research_data.TIME_FORMAT
+        ),
         "symbol": SYMBOL,
         "candidate_format": (
             "daily BID/ASK BI5; big-endian seconds/open/close/low/high/volume"

@@ -1,3 +1,4 @@
+import json
 import lzma
 import struct
 import tempfile
@@ -314,6 +315,62 @@ class DukascopyDataTests(unittest.TestCase):
             result["extra_daily_timestamps_in_verified_hours"],
         )
 
+    def test_daily_audit_defers_transient_failure_and_finishes_pass(self):
+        start = datetime(2024, 11, 28)
+
+        def fetch_side(day_start, side):
+            if side == "bid":
+                raise research_data.TransientDukascopyDownloadError("HTTP 503")
+            return [
+                {
+                    "timestamp": start,
+                    "side": "ask",
+                    "ohlc": side_ohlc(1.1002, 1.1004, 1.1000, 1.1003),
+                    "volume": 12.0,
+                }
+            ], {
+                "day_utc": day_start,
+                "side": side,
+                "bytes": 100,
+                "source": "SYNTHETIC",
+            }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            manifest_path = Path(temporary) / "manifest.json"
+            raw_path = Path(temporary) / "missing.bi5"
+            with patch.object(
+                daily_audit,
+                "read_forensic_manifest",
+                return_value=({"raw_artifacts": [{}]}, "forensic-hash"),
+            ), patch.object(
+                daily_audit,
+                "load_verified_tick_m1",
+                return_value=([], [], [start]),
+            ), patch.object(
+                daily_audit,
+                "fetch_or_read_day",
+                side_effect=fetch_side,
+            ) as mocked_fetch, patch.object(
+                daily_audit,
+                "daily_raw_path",
+                return_value=raw_path,
+            ), patch.object(
+                daily_audit,
+                "MANIFEST_PATH",
+                manifest_path,
+            ), patch.object(daily_audit.time, "sleep"), patch("builtins.print"):
+                with self.assertRaisesRegex(RuntimeError, "were deferred"):
+                    daily_audit.run_audit()
+
+            self.assertEqual(2, mocked_fetch.call_count)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                "INCOMPLETE_TRANSIENT_DOWNLOADS",
+                manifest["status"],
+            )
+            self.assertEqual(1, len(manifest["download_failures"]))
+            self.assertTrue(manifest["rerun_safe"])
+
     def test_bi5_decoder_preserves_bid_ask_and_tick_order(self):
         raw = b"".join(
             [
@@ -380,7 +437,10 @@ class DukascopyDataTests(unittest.TestCase):
             "urlopen",
             side_effect=[reset, reset],
         ), patch.object(research_data.time, "sleep"):
-            with self.assertRaisesRegex(RuntimeError, "after 2 attempts"):
+            with self.assertRaisesRegex(
+                research_data.TransientDukascopyDownloadError,
+                "after 2 attempts",
+            ):
                 research_data.download_hour(
                     "EUR/USD",
                     datetime(2024, 11, 28, 12),
