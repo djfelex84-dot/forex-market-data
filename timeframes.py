@@ -1,11 +1,28 @@
-from datetime import datetime, timedelta
+from datetime import (
+    datetime,
+    timedelta,
+)
 
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 BASE_INTERVAL_MINUTES = 5
 
+SUPPORTED_TIMEFRAMES = (
+    30,
+    60,
+)
 
-def _parse_time(value):
+
+def _parse_datetime(
+    value,
+):
+    if isinstance(
+        value,
+        datetime,
+    ):
+        return value
+
     return datetime.strptime(
         value,
         TIME_FORMAT,
@@ -13,58 +30,75 @@ def _parse_time(value):
 
 
 def _bucket_start(
-    value,
-    minutes,
+    candle_time,
+    target_minutes,
 ):
     minute = (
-        value.minute
-        // minutes
-        * minutes
+        candle_time.minute
+        // target_minutes
+        * target_minutes
     )
 
-    return value.replace(
+    return candle_time.replace(
         minute=minute,
         second=0,
         microsecond=0,
     )
 
 
+def _expected_times(
+    bucket_start,
+    target_minutes,
+):
+    candle_count = (
+        target_minutes
+        // BASE_INTERVAL_MINUTES
+    )
+
+    return [
+        bucket_start
+        + timedelta(
+            minutes=(
+                index
+                * BASE_INTERVAL_MINUTES
+            )
+        )
+        for index in range(
+            candle_count
+        )
+    ]
+
+
 def aggregate_candles(
     candles,
     target_minutes,
 ):
-    if target_minutes <= 0:
-        raise ValueError(
-            "target_minutes must be positive"
-        )
-
     if (
         target_minutes
-        % BASE_INTERVAL_MINUTES
-        != 0
+        not in SUPPORTED_TIMEFRAMES
     ):
         raise ValueError(
-            "target_minutes must be divisible by 5"
+            "Unsupported target timeframe: "
+            f"{target_minutes}min"
         )
 
     if not candles:
         return []
 
-    expected_count = (
-        target_minutes
-        // BASE_INTERVAL_MINUTES
-    )
-
     groups = {}
 
     for candle in candles:
-        candle_time = _parse_time(
-            candle["datetime"]
+        candle_time = (
+            _parse_datetime(
+                candle["datetime"]
+            )
         )
 
-        bucket = _bucket_start(
-            candle_time,
-            target_minutes,
+        bucket = (
+            _bucket_start(
+                candle_time,
+                target_minutes,
+            )
         )
 
         groups.setdefault(
@@ -77,44 +111,40 @@ def aggregate_candles(
             )
         )
 
-    result = []
+    aggregated = []
 
-    for bucket in sorted(groups):
-        group = sorted(
+    for bucket in sorted(
+        groups
+    ):
+        rows = sorted(
             groups[bucket],
             key=lambda item: item[0],
         )
 
-        if len(group) != expected_count:
-            continue
-
-        expected_times = [
-            bucket
-            + timedelta(
-                minutes=(
-                    BASE_INTERVAL_MINUTES
-                    * i
-                )
+        expected_times = (
+            _expected_times(
+                bucket,
+                target_minutes,
             )
-            for i in range(
-                expected_count
-            )
-        ]
+        )
 
         actual_times = [
             item[0]
-            for item in group
+            for item in rows
         ]
 
-        if actual_times != expected_times:
+        if (
+            actual_times
+            != expected_times
+        ):
             continue
 
-        rows = [
+        source = [
             item[1]
-            for item in group
+            for item in rows
         ]
 
-        result.append(
+        aggregated.append(
             {
                 "datetime":
                     bucket.strftime(
@@ -123,44 +153,66 @@ def aggregate_candles(
 
                 "open":
                     float(
-                        rows[0]["open"]
+                        source[0][
+                            "open"
+                        ]
                     ),
 
                 "high":
                     max(
-                        float(row["high"])
-                        for row in rows
+                        float(
+                            candle[
+                                "high"
+                            ]
+                        )
+                        for candle
+                        in source
                     ),
 
                 "low":
                     min(
-                        float(row["low"])
-                        for row in rows
+                        float(
+                            candle[
+                                "low"
+                            ]
+                        )
+                        for candle
+                        in source
                     ),
 
                 "close":
                     float(
-                        rows[-1]["close"]
+                        source[-1][
+                            "close"
+                        ]
                     ),
             }
         )
 
-    return result
+    return aggregated
 
 
 def build_signal_timeframes(
-    candles,
+    five_minute_candles,
 ):
+    candles_30m = (
+        aggregate_candles(
+            five_minute_candles,
+            30,
+        )
+    )
+
+    candles_60m = (
+        aggregate_candles(
+            five_minute_candles,
+            60,
+        )
+    )
+
     return {
         "30min":
-            aggregate_candles(
-                candles,
-                30,
-            ),
+            candles_30m,
 
         "60min":
-            aggregate_candles(
-                candles,
-                60,
-            ),
+            candles_60m,
     }
