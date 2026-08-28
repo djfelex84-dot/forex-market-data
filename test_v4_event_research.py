@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import v4_event_comparison_backtest as backtest
+import v4_history_integrity_audit as history_audit
 import v4_event_strategy as strategy
 
 
@@ -593,6 +594,70 @@ class MetricTests(unittest.TestCase):
         result = backtest.metrics(records)
 
         self.assertAlmostEqual(1.0, result["dd"], places=7)
+
+
+class HistoryIntegrityAuditTests(unittest.TestCase):
+    def test_invalid_geometry_detects_truncated_open_or_close(self):
+        self.assertTrue(
+            history_audit.invalid_geometry((1.0900, 1.0955, 1.0947, 1.0953))
+        )
+        self.assertTrue(
+            history_audit.invalid_geometry((1.0955, 1.0957, 1.0545, 1.0500))
+        )
+        self.assertFalse(
+            history_audit.invalid_geometry((1.0950, 1.0957, 1.0945, 1.0953))
+        )
+
+    def test_month_bounds_cover_exact_calendar_month(self):
+        self.assertEqual(
+            ("2024-11-01 00:00:00", "2024-11-30 23:59:59"),
+            history_audit.month_bounds("2024-11"),
+        )
+        self.assertEqual(
+            ("2024-12-01 00:00:00", "2024-12-31 23:59:59"),
+            history_audit.month_bounds("2024-12"),
+        )
+
+    def test_fetch_month_normalizes_reference_rows_without_database_write(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def read(self):
+                return (
+                    b'{"values":[{"datetime":"2024-11-01 00:00:00",'
+                    b'"open":"1.1000","high":"1.1010",'
+                    b'"low":"1.0990","close":"1.1005"}]}'
+                )
+
+        with patch.object(history_audit, "urlopen", return_value=FakeResponse()):
+            result = history_audit.fetch_month(
+                "not-a-real-key",
+                "EUR/USD",
+                "2024-11",
+            )
+
+        self.assertEqual(
+            (1.1000, 1.1010, 1.0990, 1.1005),
+            result["2024-11-01 00:00:00"],
+        )
+
+    def test_affected_month_comparison_detects_material_difference(self):
+        rows = [
+            ("2024-11-01 00:00:00", 1.0900, 1.0955, 1.0947, 1.0953),
+        ]
+        reference = {
+            "2024-11-01 00:00:00": (1.0950, 1.0955, 1.0947, 1.0953),
+        }
+
+        result = history_audit.compare_month(rows, reference, {"2024-11"})
+
+        self.assertEqual(1, result["material_mismatches"])
+        self.assertEqual(1, result["over_one_pip"])
+        self.assertAlmostEqual(50.0, result["largest"][0][0], places=7)
 
 
 if __name__ == "__main__":
