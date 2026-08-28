@@ -1,9 +1,10 @@
 """Research-only Dukascopy tick normalization and deterministic aggregation.
 
 This module deliberately has no production storage, Telegram, or live imports.
-It can decode Dukascopy's public hourly BI5 tick artifacts, derives BID, ASK,
-and tick-midpoint M1 bars, and then aggregates only complete M1 sequences to
-usable M30 bars.  Missing minutes are flagged; prices are never forward-filled.
+It can decode Dukascopy's public hourly BI5 tick artifacts and derive BID, ASK,
+and tick-midpoint bars.  Strict M1-path aggregation and complete-hour direct
+tick aggregation are separate policies.  Silent minutes are always flagged;
+prices are never forward-filled.
 """
 
 import hashlib
@@ -320,6 +321,107 @@ def _aggregate_side(rows, side):
         "low": min(float(row[side]["low"]) for row in rows),
         "close": float(rows[-1][side]["close"]),
     }
+
+
+def _aggregate_tick_side(ticks, side):
+    prices = [
+        float(
+            tick.get(
+                side,
+                (float(tick["bid"]) + float(tick["ask"])) / 2.0,
+            )
+        )
+        for tick in ticks
+    ]
+    return {
+        "open": prices[0],
+        "high": max(prices),
+        "low": min(prices),
+        "close": prices[-1],
+    }
+
+
+def aggregate_ticks_to_m30(ticks, *, complete_hours):
+    """Build M30 directly from ticks whose hourly artifacts are complete.
+
+    A minute with no quote update is recorded as silent rather than synthesized.
+    The M30 remains usable because its OHLC is defined by observed ticks across
+    a complete raw hour.  This policy must not be used to fabricate an M1 path.
+    """
+    normalized_hours = set()
+    for value in complete_hours:
+        hour = parse_utc(value)
+        if hour != hour.replace(minute=0, second=0, microsecond=0):
+            raise ValueError(f"Complete raw hour is not aligned: {hour}")
+        normalized_hours.add(hour)
+
+    grouped = OrderedDict()
+    previous_time = None
+    for tick in ticks:
+        timestamp = parse_utc(tick["timestamp"])
+        if previous_time is not None and timestamp < previous_time:
+            raise RuntimeError(f"Out-of-order tick timestamp: {timestamp}")
+        previous_time = timestamp
+
+        bid = float(tick["bid"])
+        ask = float(tick["ask"])
+        mid = float(tick.get("mid", (bid + ask) / 2.0))
+        if not all(math.isfinite(value) and value > 0 for value in (bid, ask, mid)):
+            raise RuntimeError(f"Invalid tick price at {timestamp}")
+        if bid > ask:
+            raise RuntimeError(f"BID exceeds ASK at {timestamp}")
+
+        normalized = dict(tick)
+        normalized["timestamp"] = timestamp
+        normalized["bid"] = bid
+        normalized["ask"] = ask
+        normalized["mid"] = mid
+        grouped.setdefault(floor_m30(timestamp), []).append(normalized)
+
+    result = []
+    for bucket, bucket_ticks in grouped.items():
+        observed_minutes = {
+            floor_minute(tick["timestamp"])
+            for tick in bucket_ticks
+        }
+        expected_minutes = [
+            bucket + timedelta(minutes=index)
+            for index in range(30)
+        ]
+        silent_minutes = [
+            minute for minute in expected_minutes
+            if minute not in observed_minutes
+        ]
+        source_hour = bucket.replace(minute=0)
+        source_complete = source_hour in normalized_hours
+        gaps = [
+            (
+                bucket_ticks[index]["timestamp"]
+                - bucket_ticks[index - 1]["timestamp"]
+            ).total_seconds()
+            for index in range(1, len(bucket_ticks))
+        ]
+
+        row = {
+            "timestamp": bucket,
+            "bid": _aggregate_tick_side(bucket_ticks, "bid"),
+            "ask": _aggregate_tick_side(bucket_ticks, "ask"),
+            "mid": _aggregate_tick_side(bucket_ticks, "mid"),
+            "m1_rows": len(observed_minutes),
+            "tick_count": len(bucket_ticks),
+            "first_tick_time": bucket_ticks[0]["timestamp"],
+            "last_tick_time": bucket_ticks[-1]["timestamp"],
+            "max_tick_gap_seconds": max(gaps, default=0.0),
+            "missing_minutes": silent_minutes,
+            "source_complete": source_complete,
+            "quality_status": "USABLE"
+            if source_complete
+            else "MISSING_RAW_HOUR",
+            "aggregation_policy": "DIRECT_TICKS_COMPLETE_HOUR",
+        }
+        _validate_sides(row, f"direct-tick M30 {bucket}")
+        result.append(row)
+    return result
 
 
 def aggregate_m1_to_m30(rows):

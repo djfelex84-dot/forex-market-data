@@ -27,7 +27,7 @@ READ_LIMIT = datetime(2025, 12, 31, 23, 30)
 PIP_SIZE = 0.0001
 WINDOW_BEFORE = timedelta(minutes=60)
 WINDOW_AFTER = timedelta(minutes=90)
-REQUEST_INTERVAL_SECONDS = 1.0
+REQUEST_INTERVAL_SECONDS = 5.0
 OUTPUT_DIR = Path("/tmp/v4_dukascopy_forensic")
 MANIFEST_PATH = OUTPUT_DIR / "manifest.json"
 
@@ -244,7 +244,10 @@ def run_audit():
 
     ticks.sort(key=lambda row: row["timestamp"])
     m1_rows = research_data.aggregate_ticks_to_m1(ticks)
-    m30_rows = research_data.aggregate_m1_to_m30(m1_rows)
+    m30_rows = research_data.aggregate_ticks_to_m30(
+        ticks,
+        complete_hours=hours,
+    )
     m30_by_time = {row["timestamp"]: row for row in m30_rows}
 
     print()
@@ -302,6 +305,18 @@ def run_audit():
                 if usable
                 else None,
                 "source_complete": usable,
+                "aggregation_policy": reconstructed.get("aggregation_policy")
+                if reconstructed is not None
+                else None,
+                "observed_m1_minutes": reconstructed.get("m1_rows")
+                if reconstructed is not None
+                else None,
+                "silent_minutes": reconstructed.get("missing_minutes")
+                if reconstructed is not None
+                else None,
+                "max_tick_gap_seconds": reconstructed.get("max_tick_gap_seconds")
+                if reconstructed is not None
+                else None,
                 "candidate_geometry_valid": candidate_valid,
                 "target_difference_pips": target_difference,
                 "neighbour_difference_pips": local_neighbours,
@@ -314,6 +329,7 @@ def run_audit():
             f"{timestamp} | Twelve={db_ohlc(db_row)} | "
             f"DukascopyMID={candidate} | Complete={usable} | "
             f"Valid={candidate_valid} | DiffPips={target_difference} | "
+            f"SilentMinutes={len(reconstructed.get('missing_minutes', [])) if reconstructed else None} | "
             f"NeighbourPips={local_neighbours}"
         )
 
@@ -335,6 +351,10 @@ def run_audit():
         "provider": "Dukascopy public datafeed archive",
         "symbol": SYMBOL,
         "price_source": "tick-derived BID/ASK/MID",
+        "m30_aggregation_policy": (
+            "direct ticks from complete hourly artifacts; silent minutes flagged; "
+            "no M1 forward-fill"
+        ),
         "database": {
             "path": str(DB_PATH),
             "mode": "ro + query_only",
@@ -347,6 +367,10 @@ def run_audit():
             "ticks": len(ticks),
             "m1": len(m1_rows),
             "m30": len(m30_rows),
+            "silent_m1_minutes": sum(
+                len(row["missing_minutes"])
+                for row in m30_rows
+            ),
             "reconstructed_valid_targets": reconstructed_count,
             "healthy_neighbour_comparisons": len(neighbour_differences),
         },

@@ -263,6 +263,63 @@ class DukascopyDataTests(unittest.TestCase):
         self.assertEqual(2, result[0]["max_internal_gap_minutes"])
         self.assertEqual([], research_data.m30_strategy_rows(result))
 
+    def test_complete_raw_hour_allows_direct_m30_with_silent_minute(self):
+        start = datetime(2025, 1, 2, 21)
+        ticks = []
+        for minute in range(30):
+            if minute == 20:
+                continue
+            ticks.append(
+                {
+                    "timestamp": start + timedelta(minutes=minute, seconds=1),
+                    "bid": 1.02610 + (minute * 0.000001),
+                    "ask": 1.02620 + (minute * 0.000001),
+                }
+            )
+
+        direct = research_data.aggregate_ticks_to_m30(
+            ticks,
+            complete_hours={start},
+        )
+        strict_m1 = research_data.aggregate_m1_to_m30(
+            research_data.aggregate_ticks_to_m1(ticks)
+        )
+
+        self.assertEqual("USABLE", direct[0]["quality_status"])
+        self.assertEqual(29, direct[0]["m1_rows"])
+        self.assertEqual(
+            [start + timedelta(minutes=20)],
+            direct[0]["missing_minutes"],
+        )
+        self.assertEqual("DIRECT_TICKS_COMPLETE_HOUR", direct[0]["aggregation_policy"])
+        self.assertEqual("MISSING_M1", strict_m1[0]["quality_status"])
+        self.assertNotIn(
+            start + timedelta(minutes=20),
+            {
+                row["timestamp"]
+                for row in research_data.aggregate_ticks_to_m1(ticks)
+            },
+        )
+
+    def test_direct_m30_rejects_unverified_raw_hour(self):
+        start = datetime(2025, 1, 2, 21)
+        ticks = [
+            {
+                "timestamp": start + timedelta(seconds=1),
+                "bid": 1.0261,
+                "ask": 1.0262,
+            }
+        ]
+
+        result = research_data.aggregate_ticks_to_m30(
+            ticks,
+            complete_hours=set(),
+        )
+
+        self.assertEqual("MISSING_RAW_HOUR", result[0]["quality_status"])
+        self.assertFalse(result[0]["source_complete"])
+        self.assertEqual([], research_data.m30_strategy_rows(result))
+
     def test_duplicate_m1_timestamp_is_rejected(self):
         start = datetime(2024, 11, 28, 12)
         duplicate = flat_m1_rows(start, 2)
