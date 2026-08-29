@@ -360,8 +360,18 @@ def decode_bi5_m1_candles(payload, *, symbol, day_start, side):
     return rows
 
 
-def merge_bid_ask_m1(bid_rows, ask_rows):
-    """Merge aligned daily BID/ASK bars without inventing missing minutes."""
+def merge_bid_ask_m1(
+    bid_rows,
+    ask_rows,
+    *,
+    include_zero_volume_fillers=False,
+):
+    """Merge aligned daily BID/ASK bars and identify provider filler rows.
+
+    Dukascopy daily candle files contain flat, zero-volume rows for some
+    minutes without a quote update.  They are excluded by default so an exact
+    M1 path cannot silently treat a provider filler as observed market data.
+    """
     if any(str(row.get("side", "")).lower() != "bid" for row in bid_rows):
         raise RuntimeError("Daily M1 BID collection contains a non-BID row")
     if any(str(row.get("side", "")).lower() != "ask" for row in ask_rows):
@@ -382,6 +392,25 @@ def merge_bid_ask_m1(bid_rows, ask_rows):
     for timestamp in sorted(bid_by_time):
         bid = bid_by_time[timestamp]["ohlc"]
         ask = ask_by_time[timestamp]["ohlc"]
+        bid_volume = float(bid_by_time[timestamp]["volume"])
+        ask_volume = float(ask_by_time[timestamp]["volume"])
+        if not all(
+            math.isfinite(value) and value >= 0
+            for value in (bid_volume, ask_volume)
+        ):
+            raise RuntimeError(f"Invalid daily M1 volume at {timestamp}")
+        source_observed = bid_volume > 0 or ask_volume > 0
+        if not source_observed:
+            flat_sides = all(
+                len({float(ohlc[field]) for field in OHLC_FIELDS}) == 1
+                for ohlc in (bid, ask)
+            )
+            if not flat_sides:
+                raise RuntimeError(
+                    f"Non-flat zero-volume daily M1 row at {timestamp}"
+                )
+            if not include_zero_volume_fillers:
+                continue
         mid = {
             field: (float(bid[field]) + float(ask[field])) / 2.0
             for field in OHLC_FIELDS
@@ -391,9 +420,13 @@ def merge_bid_ask_m1(bid_rows, ask_rows):
             "bid": dict(bid),
             "ask": dict(ask),
             "mid": mid,
-            "bid_volume": float(bid_by_time[timestamp]["volume"]),
-            "ask_volume": float(ask_by_time[timestamp]["volume"]),
+            "bid_volume": bid_volume,
+            "ask_volume": ask_volume,
             "source_bar_count": 2,
+            "source_observed": source_observed,
+            "quality_status": "OBSERVED"
+            if source_observed
+            else "ZERO_VOLUME_FILLER",
             "aggregation_policy": "DAILY_M1_BID_ASK_MID_PROXY",
         }
         _validate_sides(row, f"daily M1 {timestamp}")

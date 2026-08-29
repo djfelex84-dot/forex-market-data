@@ -38,6 +38,7 @@ MAX_SIDE_P95_PIPS = 0.10
 MAX_SIDE_ABSOLUTE_PIPS = 0.50
 MAX_MID_P95_PIPS = 0.25
 MAX_MID_ABSOLUTE_PIPS = 1.00
+MIN_TICK_REFERENCE_COVERAGE = 0.999
 
 
 def percentile(values, probability):
@@ -239,11 +240,26 @@ def compare_paths(tick_rows, daily_rows, audited_hours):
         if timestamp.replace(minute=0, second=0, microsecond=0)
         in audited_hour_set
     )
+    incomplete_tick_reference_hours = sorted(
+        {
+            timestamp.replace(minute=0, second=0, microsecond=0)
+            for timestamp in extra_daily
+        }
+    )
+    incomplete_hour_set = set(incomplete_tick_reference_hours)
+    overlap = sorted(set(tick_by_time) & set(daily_by_time))
+    calibration_times = [
+        timestamp
+        for timestamp in overlap
+        if timestamp.replace(minute=0, second=0, microsecond=0)
+        not in incomplete_hour_set
+    ]
+    reference_coverage = len(overlap) / (len(overlap) + len(extra_daily))
 
     side_differences = []
     mid_differences = []
     details = []
-    for timestamp in sorted(set(tick_by_time) & set(daily_by_time)):
+    for timestamp in calibration_times:
         reference = tick_by_time[timestamp]
         candidate = daily_by_time[timestamp]
         bid_difference = max_ohlc_difference_pips(
@@ -277,7 +293,7 @@ def compare_paths(tick_rows, daily_rows, audited_hours):
     mid_max = max(mid_differences)
     accepted = (
         not missing_daily
-        and not extra_daily
+        and reference_coverage >= MIN_TICK_REFERENCE_COVERAGE
         and side_p95 <= MAX_SIDE_P95_PIPS
         and side_max <= MAX_SIDE_ABSOLUTE_PIPS
         and mid_p95 <= MAX_MID_P95_PIPS
@@ -286,9 +302,13 @@ def compare_paths(tick_rows, daily_rows, audited_hours):
     return {
         "tick_m1_rows": len(tick_rows),
         "daily_m1_rows_all_downloaded_days": len(daily_rows),
-        "overlap_rows": len(details),
+        "overlap_rows": len(overlap),
+        "calibration_rows": len(details),
+        "tick_reference_coverage": reference_coverage,
         "missing_daily_timestamps": missing_daily,
         "extra_daily_timestamps_in_verified_hours": extra_daily,
+        "positive_daily_timestamps_missing_from_tick_reference": extra_daily,
+        "incomplete_tick_reference_hours": incomplete_tick_reference_hours,
         "side_median_max_ohlc_diff_pips": statistics.median(side_differences),
         "side_p95_max_ohlc_diff_pips": side_p95,
         "side_absolute_max_ohlc_diff_pips": side_max,
@@ -324,6 +344,7 @@ def run_audit():
 
     daily_rows = []
     daily_artifacts = []
+    zero_volume_fillers = []
     download_failures = []
     last_network_request = None
     total_requests = len(days) * 2
@@ -366,11 +387,18 @@ def run_audit():
                 flush=True,
             )
         if set(side_rows) == set(research_data.OFFER_SIDES):
+            merged = research_data.merge_bid_ask_m1(
+                side_rows["bid"],
+                side_rows["ask"],
+                include_zero_volume_fillers=True,
+            )
+            zero_volume_fillers.extend(
+                row["timestamp"]
+                for row in merged
+                if not row["source_observed"]
+            )
             daily_rows.extend(
-                research_data.merge_bid_ask_m1(
-                    side_rows["bid"],
-                    side_rows["ask"],
-                )
+                row for row in merged if row["source_observed"]
             )
 
     if download_failures:
@@ -388,6 +416,7 @@ def run_audit():
             },
             "tick_artifacts": tick_artifacts,
             "daily_artifacts_completed": daily_artifacts,
+            "zero_volume_fillers": zero_volume_fillers,
             "download_failures": download_failures,
             "adapter_accepted": False,
             "rerun_safe": True,
@@ -442,10 +471,13 @@ def run_audit():
             "side_absolute_pips": MAX_SIDE_ABSOLUTE_PIPS,
             "mid_proxy_p95_pips": MAX_MID_P95_PIPS,
             "mid_proxy_absolute_pips": MAX_MID_ABSOLUTE_PIPS,
-            "missing_or_extra_verified_minutes": 0,
+            "minimum_tick_reference_coverage": MIN_TICK_REFERENCE_COVERAGE,
+            "missing_daily_minutes": 0,
+            "zero_volume_fillers_are_observed_market_data": False,
         },
         "tick_artifacts": tick_artifacts,
         "daily_artifacts": daily_artifacts,
+        "zero_volume_fillers": zero_volume_fillers,
         "comparison": comparison,
         "adapter_accepted": comparison["adapter_accepted"],
         "production_database_opened": False,
@@ -457,10 +489,20 @@ def run_audit():
     print("ADAPTER COMPARISON")
     print("=" * 118)
     print(f"OVERLAP_M1={comparison['overlap_rows']}")
+    print(f"CALIBRATION_M1={comparison['calibration_rows']}")
+    print(f"ZERO_VOLUME_FILLERS_DROPPED={len(zero_volume_fillers)}")
     print(f"MISSING_DAILY_M1={len(comparison['missing_daily_timestamps'])}")
     print(
-        "EXTRA_DAILY_M1_IN_VERIFIED_HOURS="
-        f"{len(comparison['extra_daily_timestamps_in_verified_hours'])}"
+        "POSITIVE_DAILY_M1_MISSING_FROM_TICK_REFERENCE="
+        f"{len(comparison['positive_daily_timestamps_missing_from_tick_reference'])}"
+    )
+    print(
+        "INCOMPLETE_TICK_REFERENCE_HOURS="
+        f"{comparison['incomplete_tick_reference_hours']}"
+    )
+    print(
+        "TICK_REFERENCE_COVERAGE="
+        f"{comparison['tick_reference_coverage']:.6f}"
     )
     print(
         "SIDE_DIFF_PIPS | "

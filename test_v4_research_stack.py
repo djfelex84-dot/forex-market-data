@@ -254,6 +254,49 @@ class DukascopyDataTests(unittest.TestCase):
         self.assertEqual(60, m30[0]["source_bar_count"])
         self.assertEqual("USABLE", m30[0]["quality_status"])
 
+    def test_daily_bid_ask_merge_drops_flat_zero_volume_fillers(self):
+        timestamp = datetime(2025, 1, 2, 21, 20)
+        bid = {
+            "timestamp": timestamp,
+            "side": "bid",
+            "ohlc": side_ohlc(1.02626, 1.02626, 1.02626, 1.02626),
+            "volume": 0.0,
+        }
+        ask = {
+            "timestamp": timestamp,
+            "side": "ask",
+            "ohlc": side_ohlc(1.02628, 1.02628, 1.02628, 1.02628),
+            "volume": 0.0,
+        }
+
+        self.assertEqual([], research_data.merge_bid_ask_m1([bid], [ask]))
+        included = research_data.merge_bid_ask_m1(
+            [bid],
+            [ask],
+            include_zero_volume_fillers=True,
+        )
+        self.assertEqual(1, len(included))
+        self.assertFalse(included[0]["source_observed"])
+        self.assertEqual("ZERO_VOLUME_FILLER", included[0]["quality_status"])
+
+    def test_daily_bid_ask_merge_rejects_nonflat_zero_volume_row(self):
+        timestamp = datetime(2025, 1, 2, 21, 20)
+        bid = {
+            "timestamp": timestamp,
+            "side": "bid",
+            "ohlc": side_ohlc(1.02626, 1.02627, 1.02626, 1.02627),
+            "volume": 0.0,
+        }
+        ask = {
+            "timestamp": timestamp,
+            "side": "ask",
+            "ohlc": side_ohlc(1.02628, 1.02628, 1.02628, 1.02628),
+            "volume": 0.0,
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "Non-flat zero-volume"):
+            research_data.merge_bid_ask_m1([bid], [ask])
+
     def test_daily_bid_ask_merge_rejects_timestamp_mismatch(self):
         bid = {
             "timestamp": datetime(2024, 11, 28, 12),
@@ -295,25 +338,82 @@ class DukascopyDataTests(unittest.TestCase):
         self.assertEqual([], result["extra_daily_timestamps_in_verified_hours"])
         self.assertEqual(0.0, result["side_absolute_max_ohlc_diff_pips"])
 
+    def test_daily_adapter_comparison_rejects_missing_observed_minute(self):
+        start = datetime(2024, 11, 28, 12)
+        reference = flat_m1_rows(start, 2)
+
+        result = daily_audit.compare_paths(reference, reference[:1], [start])
+
+        self.assertFalse(result["adapter_accepted"])
+        self.assertEqual(
+            [start + timedelta(minutes=1)],
+            result["missing_daily_timestamps"],
+        )
+
     def test_daily_adapter_comparison_rejects_synthetic_extra_minute(self):
         start = datetime(2024, 11, 28, 12)
         reference = flat_m1_rows(start, 2)
         candidate = [dict(row) for row in reference]
         candidate.append(m1_row(
-            start + timedelta(minutes=2),
+            start + timedelta(hours=1),
             open_price=1.1000,
             high=1.1001,
             low=1.0999,
             close=1.1000,
         ))
 
-        result = daily_audit.compare_paths(reference, candidate, [start])
+        result = daily_audit.compare_paths(
+            reference,
+            candidate,
+            [start, start + timedelta(hours=1)],
+        )
 
         self.assertFalse(result["adapter_accepted"])
         self.assertEqual(
-            [start + timedelta(minutes=2)],
+            [start + timedelta(hours=1)],
             result["extra_daily_timestamps_in_verified_hours"],
         )
+
+    def test_daily_adapter_classifies_sparse_positive_extra_as_tick_gap(self):
+        start = datetime(2024, 11, 28, 12)
+        reference = [
+            m1_row(
+                start,
+                open_price=1.1000,
+                high=1.1001,
+                low=1.0999,
+                close=1.1000,
+            ),
+            m1_row(
+                start + timedelta(hours=1),
+                open_price=1.1000,
+                high=1.1001,
+                low=1.0999,
+                close=1.1000,
+            ),
+        ]
+        candidate = [dict(row) for row in reference]
+        candidate.append(m1_row(
+            start + timedelta(hours=1, minutes=1),
+            open_price=1.1000,
+            high=1.1001,
+            low=1.0999,
+            close=1.1000,
+        ))
+
+        with patch.object(daily_audit, "MIN_TICK_REFERENCE_COVERAGE", 0.5):
+            result = daily_audit.compare_paths(
+                reference,
+                candidate,
+                [start, start + timedelta(hours=1)],
+            )
+
+        self.assertTrue(result["adapter_accepted"])
+        self.assertEqual(
+            [start + timedelta(hours=1)],
+            result["incomplete_tick_reference_hours"],
+        )
+        self.assertEqual(1, result["calibration_rows"])
 
     def test_daily_audit_defers_transient_failure_and_finishes_pass(self):
         start = datetime(2024, 11, 28)
