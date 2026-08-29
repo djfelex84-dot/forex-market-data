@@ -15,6 +15,7 @@ import v4_dukascopy_train_builder as train_builder
 import v4_event_anatomy as anatomy
 import v4_research_data as research_data
 import v4_event_strategy as strategy
+import v4_train_event_anatomy as train_anatomy
 import v4_train_event_research as train_research
 
 
@@ -1616,6 +1617,225 @@ class TrainEventResearchTests(unittest.TestCase):
                 "SKIP_OPEN_TRADE"
             ],
         )
+
+
+class TrainEventAnatomyTests(unittest.TestCase):
+    def test_filler_is_coverage_only_and_cannot_create_extreme(self):
+        start = datetime(2024, 1, 2, 10)
+        grid = flat_m1_rows(
+            start,
+            train_anatomy.PRIMARY_HORIZON_MINUTES,
+        )
+        grid[10] = m1_row(
+            start + timedelta(minutes=10),
+            open_price=1.1000,
+            high=1.1200,
+            low=1.0800,
+            close=1.1000,
+        )
+        grid[10]["source_observed"] = False
+        grid[11] = m1_row(
+            start + timedelta(minutes=11),
+            open_price=1.1000,
+            high=1.1006,
+            low=1.0999,
+            close=1.1005,
+        )
+
+        with patch.object(
+            train_anatomy,
+            "load_event_grid",
+            return_value=grid,
+        ):
+            result = train_anatomy.analyze_verified_event(
+                connection=None,
+                symbol="EUR/USD",
+                event=event(start),
+            )
+
+        self.assertEqual("EVALUATED", result["status"])
+        self.assertEqual(29, result["observed_quotes_30m"])
+        self.assertEqual(1, result["filler_minutes_30m"])
+        self.assertAlmostEqual(0.6, result["mfe_30m_atr"])
+        self.assertEqual(12, result["time_to_mfe_30m"])
+        self.assertEqual("FAVORABLE", result["first_passage_050atr"])
+        self.assertEqual(12, result["first_passage_050atr_minute"])
+
+    def test_filler_at_event_entry_rejects_anatomy_entry(self):
+        start = datetime(2024, 1, 2, 10)
+        grid = flat_m1_rows(
+            start,
+            train_anatomy.PRIMARY_HORIZON_MINUTES,
+        )
+        grid[0]["source_observed"] = False
+
+        with patch.object(
+            train_anatomy,
+            "load_event_grid",
+            return_value=grid,
+        ):
+            result = train_anatomy.analyze_verified_event(
+                connection=None,
+                symbol="EUR/USD",
+                event=event(start),
+            )
+
+        self.assertEqual("NO_ENTRY_QUOTE", result["status"])
+        self.assertNotIn("event_entry_mid", result)
+
+    def test_sell_anatomy_reverses_direction_and_keeps_real_minute(self):
+        start = datetime(2024, 1, 2, 10)
+        grid = flat_m1_rows(
+            start,
+            train_anatomy.PRIMARY_HORIZON_MINUTES,
+        )
+        grid[4] = m1_row(
+            start + timedelta(minutes=4),
+            open_price=1.1000,
+            high=1.1001,
+            low=1.0994,
+            close=1.0995,
+        )
+
+        with patch.object(
+            train_anatomy,
+            "load_event_grid",
+            return_value=grid,
+        ):
+            result = train_anatomy.analyze_verified_event(
+                connection=None,
+                symbol="EUR/USD",
+                event=event(start, direction="SELL"),
+            )
+
+        self.assertEqual("EVALUATED", result["status"])
+        self.assertAlmostEqual(0.6, result["mfe_30m_atr"])
+        self.assertEqual(5, result["time_to_mfe_30m"])
+        self.assertEqual("FAVORABLE", result["first_passage_050atr"])
+        self.assertEqual(5, result["first_passage_050atr_minute"])
+
+    def test_endpoint_age_reports_trailing_fillers_without_using_them(self):
+        start = datetime(2024, 1, 2, 10)
+        grid = flat_m1_rows(
+            start,
+            train_anatomy.PRIMARY_HORIZON_MINUTES,
+        )
+        grid[28]["source_observed"] = False
+        grid[29]["source_observed"] = False
+
+        with patch.object(
+            train_anatomy,
+            "load_event_grid",
+            return_value=grid,
+        ):
+            result = train_anatomy.analyze_verified_event(
+                connection=None,
+                symbol="EUR/USD",
+                event=event(start),
+            )
+
+        self.assertEqual(28, result["observed_quotes_30m"])
+        self.assertEqual(2, result["filler_minutes_30m"])
+        self.assertEqual(2, result["endpoint_quote_age_30m"])
+
+    def test_anatomy_boundary_guard_fires_before_source_lookup(self):
+        start = strategy.TRAIN_END - timedelta(minutes=180)
+
+        with patch.object(
+            train_anatomy,
+            "load_event_grid",
+        ) as mocked_load:
+            result = train_anatomy.analyze_verified_event(
+                connection=None,
+                symbol="EUR/USD",
+                event=event(start),
+            )
+
+        self.assertEqual("BOUNDARY_GUARD", result["status"])
+        mocked_load.assert_not_called()
+
+    def test_anatomy_source_gap_fails_closed(self):
+        start = datetime(2024, 1, 2, 10)
+
+        with patch.object(
+            train_anatomy,
+            "load_event_grid",
+            return_value=[],
+        ):
+            result = train_anatomy.analyze_verified_event(
+                connection=None,
+                symbol="EUR/USD",
+                event=event(start),
+            )
+
+        self.assertEqual("SOURCE_GRID_GAP", result["status"])
+
+    def test_anatomy_does_not_use_row_after_maximum_horizon(self):
+        start = datetime(2024, 1, 2, 10)
+        baseline = flat_m1_rows(
+            start,
+            train_anatomy.PRIMARY_HORIZON_MINUTES,
+        )
+        future = baseline + [
+            m1_row(
+                start + timedelta(
+                    minutes=train_anatomy.PRIMARY_HORIZON_MINUTES
+                ),
+                open_price=1.1000,
+                high=1.1500,
+                low=1.0500,
+                close=1.1400,
+            )
+        ]
+
+        with patch.object(
+            train_anatomy,
+            "load_event_grid",
+            return_value=baseline,
+        ):
+            expected = train_anatomy.analyze_verified_event(
+                connection=None,
+                symbol="EUR/USD",
+                event=event(start),
+            )
+        with patch.object(
+            train_anatomy,
+            "load_event_grid",
+            return_value=future,
+        ):
+            rejected = train_anatomy.analyze_verified_event(
+                connection=None,
+                symbol="EUR/USD",
+                event=event(start),
+            )
+
+        self.assertEqual("EVALUATED", expected["status"])
+        self.assertEqual("SOURCE_GRID_GAP", rejected["status"])
+
+    def test_anatomy_summary_keeps_attrition_out_of_price_statistics(self):
+        start = datetime(2024, 1, 2, 10)
+        evaluated = {
+            "status": "EVALUATED",
+            "signal_time": start,
+            "fr_180m_atr": 0.4,
+            "mfe_180m_atr": 0.8,
+            "mae_180m_atr": 0.2,
+            "observed_quotes_180m": 179,
+            "first_passage_025atr": "FAVORABLE",
+            "first_passage_050atr": "FAVORABLE",
+            "first_passage_100atr": "NONE",
+        }
+        rejected = {
+            "status": "NO_ENTRY_QUOTE",
+            "signal_time": start + timedelta(minutes=30),
+        }
+
+        result = train_anatomy.summarize_group([evaluated, rejected])
+
+        self.assertEqual(2, result["events"])
+        self.assertEqual(1, result["evaluated"])
+        self.assertEqual({"EVALUATED": 1, "NO_ENTRY_QUOTE": 1}, result["attrition"])
+        self.assertAlmostEqual(0.4, result["mean_fr_atr"])
 
 
 class EventAnatomyTests(unittest.TestCase):
