@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import v4_dukascopy_forensic_audit as forensic
 import v4_dukascopy_daily_m1_audit as daily_audit
+import v4_dukascopy_train_builder as train_builder
 import v4_event_anatomy as anatomy
 import v4_research_data as research_data
 import v4_event_strategy as strategy
@@ -72,6 +73,41 @@ def canonical_m30(timestamp, price=1.1000, *, usable=True):
         "source_complete": usable,
         "quality_status": "USABLE" if usable else "MISSING_M1",
     }
+
+
+def daily_m1_payload(
+    side,
+    *,
+    rows=1_440,
+    filler_minute=None,
+    zero_volume_price_change_minute=None,
+):
+    base = 110_000 if side == "bid" else 110_010
+    records = []
+    for minute in range(rows):
+        open_raw = base
+        close_raw = base
+        low_raw = base
+        high_raw = base
+        volume = 1.0
+        if minute == filler_minute:
+            volume = 0.0
+        if minute == zero_volume_price_change_minute:
+            close_raw = base + 1
+            high_raw = base + 1
+            volume = 0.0
+        records.append(
+            struct.pack(
+                ">IIIIIf",
+                minute * 60,
+                open_raw,
+                close_raw,
+                low_raw,
+                high_raw,
+                volume,
+            )
+        )
+    return lzma.compress(b"".join(records))
 
 
 def event(signal_time, *, direction="BUY"):
@@ -743,6 +779,330 @@ class DukascopyDataTests(unittest.TestCase):
             finally:
                 forensic.fcntl.flock(first.fileno(), forensic.fcntl.LOCK_UN)
                 first.close()
+
+
+class TrainBuilderTests(unittest.TestCase):
+    def test_research_days_include_context_and_never_expose_2025(self):
+        days = train_builder.research_days()
+
+        self.assertEqual(datetime(2020, 12, 1), days[0])
+        self.assertEqual(datetime(2024, 12, 31), days[-1])
+        self.assertTrue(all(day < datetime(2025, 1, 1) for day in days))
+
+    def test_fetch_guard_rejects_2025_before_cache_or_network(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            train_builder,
+            "RAW_DIR",
+            Path(directory) / "raw",
+        ), patch.object(
+            train_builder.research_data,
+            "download_m1_day",
+        ) as mocked_download:
+            with self.assertRaisesRegex(RuntimeError, "outside locked"):
+                train_builder.fetch_or_read_side(
+                    "EUR/USD",
+                    datetime(2025, 1, 1),
+                    "bid",
+                )
+
+        mocked_download.assert_not_called()
+
+    def test_materialization_guard_rejects_2025_before_decoding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            connection = train_builder.open_database(
+                Path(directory) / "train.sqlite3"
+            )
+            try:
+                with patch.object(
+                    train_builder.research_data,
+                    "decode_bi5_m1_candles",
+                ) as mocked_decode:
+                    with self.assertRaisesRegex(RuntimeError, "materialize outside"):
+                        train_builder.materialize_day(
+                            connection,
+                            symbol="EUR/USD",
+                            day_start=datetime(2025, 1, 1),
+                            bid_payload=b"bid",
+                            ask_payload=b"ask",
+                            bid_url="bid-url",
+                            ask_url="ask-url",
+                            bid_source="TEST",
+                            ask_source="TEST",
+                        )
+                mocked_decode.assert_not_called()
+            finally:
+                connection.close()
+
+    def test_truncated_daily_grid_fails_closed(self):
+        day = datetime(2024, 1, 2)
+        with tempfile.TemporaryDirectory() as directory:
+            connection = train_builder.open_database(
+                Path(directory) / "train.sqlite3"
+            )
+            try:
+                with self.assertRaisesRegex(RuntimeError, "1439/1440 rows"):
+                    train_builder.materialize_day(
+                        connection,
+                        symbol="EUR/USD",
+                        day_start=day,
+                        bid_payload=daily_m1_payload("bid", rows=1_439),
+                        ask_payload=daily_m1_payload("ask", rows=1_439),
+                        bid_url="bid-url",
+                        ask_url="ask-url",
+                        bid_source="TEST",
+                        ask_source="TEST",
+                    )
+            finally:
+                connection.close()
+
+    def test_materialization_is_idempotent_and_preserves_quality_classes(self):
+        day = datetime(2024, 1, 2)
+        bid_payload = daily_m1_payload(
+            "bid",
+            filler_minute=10,
+            zero_volume_price_change_minute=11,
+        )
+        ask_payload = daily_m1_payload(
+            "ask",
+            filler_minute=10,
+            zero_volume_price_change_minute=11,
+        )
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            train_builder,
+            "RAW_DIR",
+            Path(directory) / "raw",
+        ):
+            connection = train_builder.open_database(
+                Path(directory) / "train.sqlite3"
+            )
+            try:
+                research_data.write_raw_artifact(
+                    train_builder.raw_path("EUR/USD", day, "bid"),
+                    bid_payload,
+                )
+                research_data.write_raw_artifact(
+                    train_builder.raw_path("EUR/USD", day, "ask"),
+                    ask_payload,
+                )
+                arguments = {
+                    "symbol": "EUR/USD",
+                    "day_start": day,
+                    "bid_payload": bid_payload,
+                    "ask_payload": ask_payload,
+                    "bid_url": "bid-url",
+                    "ask_url": "ask-url",
+                    "bid_source": "TEST",
+                    "ask_source": "TEST",
+                }
+                first = train_builder.materialize_day(connection, **arguments)
+                second = train_builder.materialize_day(connection, **arguments)
+
+                self.assertEqual("MATERIALIZED", first["status"])
+                self.assertEqual(1_440, first["source_rows"])
+                self.assertEqual(1_439, first["observed_rows"])
+                self.assertEqual(1, first["filler_rows"])
+                self.assertEqual(1, first["zero_volume_price_change_rows"])
+                self.assertEqual("DB_CACHE", second["status"])
+                self.assertEqual(
+                    1_439,
+                    connection.execute("SELECT COUNT(*) FROM m1_bars").fetchone()[0],
+                )
+                self.assertEqual(
+                    1,
+                    connection.execute("SELECT COUNT(*) FROM m1_gaps").fetchone()[0],
+                )
+                self.assertEqual(
+                    1,
+                    connection.execute(
+                        """
+                        SELECT COUNT(*) FROM m1_bars
+                        WHERE quality_status =
+                              'OBSERVED_ZERO_VOLUME_PRICE_CHANGE'
+                        """
+                    ).fetchone()[0],
+                )
+                self.assertEqual(
+                    [],
+                    train_builder.validate_database(
+                        connection,
+                        {("EUR/USD", "2024-01-02")},
+                    ),
+                )
+                connection.execute(
+                    """
+                    DELETE FROM m1_bars
+                    WHERE symbol = 'EUR/USD'
+                      AND datetime = '2024-01-02 00:00:00'
+                    """
+                )
+                connection.commit()
+                with self.assertRaisesRegex(RuntimeError, "normalized row counts"):
+                    train_builder.validate_database(
+                        connection,
+                        {("EUR/USD", "2024-01-02")},
+                    )
+            finally:
+                connection.close()
+
+    def test_missing_side_fails_without_partial_database_rows(self):
+        day = datetime(2024, 1, 2)
+        with tempfile.TemporaryDirectory() as directory:
+            connection = train_builder.open_database(
+                Path(directory) / "train.sqlite3"
+            )
+            try:
+                with self.assertRaises(train_builder.RequiredSourceGapError):
+                    train_builder.materialize_day(
+                        connection,
+                        symbol="EUR/USD",
+                        day_start=day,
+                        bid_payload=daily_m1_payload("bid"),
+                        ask_payload=b"",
+                        bid_url="bid-url",
+                        ask_url="ask-url",
+                        bid_source="TEST",
+                        ask_source="TEST",
+                    )
+                self.assertEqual(
+                    0,
+                    connection.execute(
+                        "SELECT COUNT(*) FROM processed_days"
+                    ).fetchone()[0],
+                )
+            finally:
+                connection.close()
+
+    def test_zero_byte_404_marker_is_retried_not_cached(self):
+        day = datetime(2024, 1, 2)
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            train_builder,
+            "RAW_DIR",
+            Path(directory) / "raw",
+        ), patch.object(
+            train_builder,
+            "ADAPTER_AUDIT_CACHE",
+            Path(directory) / "seed",
+        ):
+            path = train_builder.raw_path("EUR/USD", day, "bid")
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"")
+            url = research_data.dukascopy_m1_day_url("EUR/USD", day, "bid")
+            with patch.object(
+                train_builder.research_data,
+                "download_m1_day",
+                return_value=(b"valid-payload", url),
+            ) as mocked_download:
+                payload, returned_url, source = train_builder.fetch_or_read_side(
+                    "EUR/USD",
+                    day,
+                    "bid",
+                )
+
+            self.assertEqual(b"valid-payload", payload)
+            self.assertEqual(url, returned_url)
+            self.assertEqual("NETWORK", source)
+            self.assertEqual(b"valid-payload", path.read_bytes())
+            mocked_download.assert_called_once()
+
+    def test_saturday_record_is_idempotent_but_provenance_checked(self):
+        saturday = datetime(2024, 1, 6)
+        with tempfile.TemporaryDirectory() as directory:
+            connection = train_builder.open_database(
+                Path(directory) / "train.sqlite3"
+            )
+            try:
+                self.assertEqual(
+                    "SATURDAY_CLOSED",
+                    train_builder.record_saturday(
+                        connection,
+                        "EUR/USD",
+                        saturday,
+                    ),
+                )
+                self.assertEqual(
+                    "DB_CACHE",
+                    train_builder.record_saturday(
+                        connection,
+                        "EUR/USD",
+                        saturday,
+                    ),
+                )
+                connection.execute(
+                    """
+                    UPDATE processed_days SET status = 'MATERIALIZED'
+                    WHERE symbol = 'EUR/USD' AND day_utc = '2024-01-06'
+                    """
+                )
+                connection.commit()
+                with self.assertRaisesRegex(RuntimeError, "provenance mismatch"):
+                    train_builder.record_saturday(
+                        connection,
+                        "EUR/USD",
+                        saturday,
+                    )
+            finally:
+                connection.close()
+
+    def test_database_metadata_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "train.sqlite3"
+            connection = train_builder.open_database(path)
+            connection.execute(
+                "UPDATE metadata SET value = 'false' "
+                "WHERE key = 'validation_2025_locked'"
+            )
+            connection.commit()
+            connection.close()
+
+            with self.assertRaisesRegex(RuntimeError, "metadata mismatch"):
+                train_builder.open_database(path)
+
+    def test_second_train_builder_process_lock_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            train_builder,
+            "OUTPUT_DIR",
+            Path(directory),
+        ):
+            first = train_builder.acquire_run_lock()
+            try:
+                with self.assertRaisesRegex(RuntimeError, "already holds"):
+                    train_builder.acquire_run_lock()
+            finally:
+                train_builder.fcntl.flock(
+                    first.fileno(),
+                    train_builder.fcntl.LOCK_UN,
+                )
+                first.close()
+
+    def test_complete_checkpoint_hashes_checkpointed_database(self):
+        saturday = datetime(2024, 1, 6)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database_path = root / "train.sqlite3"
+            manifest_path = root / "manifest.json"
+            with patch.object(
+                train_builder,
+                "DATABASE_PATH",
+                database_path,
+            ), patch.object(
+                train_builder,
+                "MANIFEST_PATH",
+                manifest_path,
+            ), patch.object(
+                train_builder,
+                "research_days",
+                return_value=[saturday],
+            ), patch("builtins.print"):
+                train_builder.run_builder()
+
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual("COMPLETE", manifest["status"])
+            self.assertTrue(manifest["validation_2025_locked"])
+            self.assertEqual(
+                research_data.sha256_file(database_path),
+                manifest["database_sha256"],
+            )
+            self.assertFalse(Path(f"{database_path}-wal").exists())
 
 
 class EventAnatomyTests(unittest.TestCase):
