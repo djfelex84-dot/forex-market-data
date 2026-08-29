@@ -345,6 +345,7 @@ def run_audit():
     daily_rows = []
     daily_artifacts = []
     zero_volume_fillers = []
+    zero_volume_price_change_rows = []
     download_failures = []
     last_network_request = None
     total_requests = len(days) * 2
@@ -397,6 +398,12 @@ def run_audit():
                 for row in merged
                 if not row["source_observed"]
             )
+            zero_volume_price_change_rows.extend(
+                row["timestamp"]
+                for row in merged
+                if row["quality_status"]
+                == "OBSERVED_ZERO_VOLUME_PRICE_CHANGE"
+            )
             daily_rows.extend(
                 row for row in merged if row["source_observed"]
             )
@@ -417,6 +424,7 @@ def run_audit():
             "tick_artifacts": tick_artifacts,
             "daily_artifacts_completed": daily_artifacts,
             "zero_volume_fillers": zero_volume_fillers,
+            "zero_volume_price_change_rows": zero_volume_price_change_rows,
             "download_failures": download_failures,
             "adapter_accepted": False,
             "rerun_safe": True,
@@ -478,6 +486,7 @@ def run_audit():
         "tick_artifacts": tick_artifacts,
         "daily_artifacts": daily_artifacts,
         "zero_volume_fillers": zero_volume_fillers,
+        "zero_volume_price_change_rows": zero_volume_price_change_rows,
         "comparison": comparison,
         "adapter_accepted": comparison["adapter_accepted"],
         "production_database_opened": False,
@@ -491,6 +500,10 @@ def run_audit():
     print(f"OVERLAP_M1={comparison['overlap_rows']}")
     print(f"CALIBRATION_M1={comparison['calibration_rows']}")
     print(f"ZERO_VOLUME_FILLERS_DROPPED={len(zero_volume_fillers)}")
+    print(
+        "ZERO_VOLUME_PRICE_CHANGE_ROWS_KEPT="
+        f"{len(zero_volume_price_change_rows)}"
+    )
     print(f"MISSING_DAILY_M1={len(comparison['missing_daily_timestamps'])}")
     print(
         "POSITIVE_DAILY_M1_MISSING_FROM_TICK_REFERENCE="

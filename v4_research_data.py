@@ -399,16 +399,13 @@ def merge_bid_ask_m1(
             for value in (bid_volume, ask_volume)
         ):
             raise RuntimeError(f"Invalid daily M1 volume at {timestamp}")
-        source_observed = bid_volume > 0 or ask_volume > 0
+        flat_sides = all(
+            len({float(ohlc[field]) for field in OHLC_FIELDS}) == 1
+            for ohlc in (bid, ask)
+        )
+        zero_volume = bid_volume == 0 and ask_volume == 0
+        source_observed = not (zero_volume and flat_sides)
         if not source_observed:
-            flat_sides = all(
-                len({float(ohlc[field]) for field in OHLC_FIELDS}) == 1
-                for ohlc in (bid, ask)
-            )
-            if not flat_sides:
-                raise RuntimeError(
-                    f"Non-flat zero-volume daily M1 row at {timestamp}"
-                )
             if not include_zero_volume_fillers:
                 continue
         mid = {
@@ -424,9 +421,13 @@ def merge_bid_ask_m1(
             "ask_volume": ask_volume,
             "source_bar_count": 2,
             "source_observed": source_observed,
-            "quality_status": "OBSERVED"
-            if source_observed
-            else "ZERO_VOLUME_FILLER",
+            "quality_status": (
+                "ZERO_VOLUME_FILLER"
+                if not source_observed
+                else "OBSERVED_ZERO_VOLUME_PRICE_CHANGE"
+                if zero_volume
+                else "OBSERVED"
+            ),
             "aggregation_policy": "DAILY_M1_BID_ASK_MID_PROXY",
         }
         _validate_sides(row, f"daily M1 {timestamp}")

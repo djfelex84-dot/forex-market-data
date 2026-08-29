@@ -279,7 +279,7 @@ class DukascopyDataTests(unittest.TestCase):
         self.assertFalse(included[0]["source_observed"])
         self.assertEqual("ZERO_VOLUME_FILLER", included[0]["quality_status"])
 
-    def test_daily_bid_ask_merge_rejects_nonflat_zero_volume_row(self):
+    def test_daily_bid_ask_merge_keeps_nonflat_zero_volume_row(self):
         timestamp = datetime(2025, 1, 2, 21, 20)
         bid = {
             "timestamp": timestamp,
@@ -294,8 +294,14 @@ class DukascopyDataTests(unittest.TestCase):
             "volume": 0.0,
         }
 
-        with self.assertRaisesRegex(RuntimeError, "Non-flat zero-volume"):
-            research_data.merge_bid_ask_m1([bid], [ask])
+        merged = research_data.merge_bid_ask_m1([bid], [ask])
+
+        self.assertEqual(1, len(merged))
+        self.assertTrue(merged[0]["source_observed"])
+        self.assertEqual(
+            "OBSERVED_ZERO_VOLUME_PRICE_CHANGE",
+            merged[0]["quality_status"],
+        )
 
     def test_daily_bid_ask_merge_rejects_timestamp_mismatch(self):
         bid = {
