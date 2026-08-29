@@ -3,10 +3,11 @@ import lzma
 import struct
 import tempfile
 import unittest
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.error import URLError
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import v4_dukascopy_forensic_audit as forensic
 import v4_dukascopy_daily_m1_audit as daily_audit
@@ -14,6 +15,7 @@ import v4_dukascopy_train_builder as train_builder
 import v4_event_anatomy as anatomy
 import v4_research_data as research_data
 import v4_event_strategy as strategy
+import v4_train_event_research as train_research
 
 
 def side_ohlc(open_price, high, low, close):
@@ -663,6 +665,45 @@ class DukascopyDataTests(unittest.TestCase):
         self.assertEqual(2, result[0]["max_internal_gap_minutes"])
         self.assertEqual([], research_data.m30_strategy_rows(result))
 
+    def test_verified_grid_uses_fillers_for_coverage_not_ohlc(self):
+        start = datetime(2024, 11, 28, 12)
+        rows = flat_m1_rows(start, 30, price=1.1000)
+        rows[0]["source_observed"] = False
+        rows[0]["bid"] = side_ohlc(1.0900, 1.0900, 1.0900, 1.0900)
+        rows[0]["ask"] = side_ohlc(1.0902, 1.0902, 1.0902, 1.0902)
+        rows[0]["mid"] = side_ohlc(1.0901, 1.0901, 1.0901, 1.0901)
+
+        result = research_data.aggregate_verified_grid_to_m30(rows)
+
+        self.assertEqual(1, len(result))
+        self.assertEqual("USABLE", result[0]["quality_status"])
+        self.assertEqual(30, result[0]["source_grid_rows"])
+        self.assertEqual(29, result[0]["observed_m1_rows"])
+        self.assertEqual(1, result[0]["filler_m1_rows"])
+        self.assertEqual(1.09995, result[0]["bid"]["open"])
+
+    def test_verified_grid_keeps_fully_silent_m30_unusable(self):
+        start = datetime(2024, 11, 28, 12)
+        rows = flat_m1_rows(start, 30)
+        for row in rows:
+            row["source_observed"] = False
+
+        result = research_data.aggregate_verified_grid_to_m30(rows)
+
+        self.assertEqual("NO_OBSERVED_QUOTES", result[0]["quality_status"])
+        self.assertEqual(0, result[0]["observed_m1_rows"])
+        self.assertNotIn("mid", result[0])
+
+    def test_verified_grid_rejects_missing_source_minute(self):
+        start = datetime(2024, 11, 28, 12)
+        rows = flat_m1_rows(start, 30)
+        del rows[12]
+
+        result = research_data.aggregate_verified_grid_to_m30(rows)
+
+        self.assertEqual("MISSING_SOURCE_GRID", result[0]["quality_status"])
+        self.assertFalse(result[0]["source_complete"])
+
     def test_complete_raw_hour_allows_direct_m30_with_silent_minute(self):
         start = datetime(2025, 1, 2, 21)
         ticks = []
@@ -1103,6 +1144,478 @@ class TrainBuilderTests(unittest.TestCase):
                 manifest["database_sha256"],
             )
             self.assertFalse(Path(f"{database_path}-wal").exists())
+
+
+class TrainEventResearchTests(unittest.TestCase):
+    @staticmethod
+    def trade_event(start, direction="BUY", stop_price=None):
+        if stop_price is None:
+            stop_price = 1.09905 if direction == "BUY" else 1.10095
+        return {
+            "setup": strategy.SETUP_BREAKOUT_RETEST,
+            "direction": direction,
+            "signal_time": start,
+            "entry_price": 1.1000,
+            "stop_price": stop_price,
+            "level": 1.1000,
+            "atr": 0.0010,
+            "source": "SYNTHETIC",
+        }
+
+    def test_partial_manifest_is_rejected_before_research(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "status": "IN_PROGRESS",
+                        "validation_2025_locked": True,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "manifest gate failed"):
+                train_research._load_manifest(path)
+
+    def test_train_grid_read_rejects_2025_before_sql(self):
+        connection = Mock()
+
+        with self.assertRaisesRegex(RuntimeError, "outside lock"):
+            list(
+                train_research.iter_source_grid(
+                    connection,
+                    "EUR/USD",
+                    datetime(2025, 1, 1),
+                    datetime(2025, 1, 2),
+                )
+            )
+
+        connection.execute.assert_not_called()
+
+    def test_source_grid_merges_observed_and_filler_rows_in_order(self):
+        start = datetime(2024, 1, 2, 10)
+        with tempfile.TemporaryDirectory() as directory:
+            connection = train_builder.open_database(
+                Path(directory) / "train.sqlite3"
+            )
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO m1_bars(
+                        symbol, datetime,
+                        bid_open, bid_high, bid_low, bid_close,
+                        ask_open, ask_high, ask_low, ask_close,
+                        mid_open, mid_high, mid_low, mid_close,
+                        bid_volume, ask_volume, quality_status
+                    ) VALUES (
+                        'EUR/USD', '2024-01-02 10:00:00',
+                        1.1000, 1.1002, 1.0998, 1.1001,
+                        1.1002, 1.1004, 1.1000, 1.1003,
+                        1.1001, 1.1003, 1.0999, 1.1002,
+                        10.0, 12.0, 'OBSERVED'
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO m1_gaps(
+                        symbol, datetime, reason, bid_open, ask_open
+                    ) VALUES (
+                        'EUR/USD', '2024-01-02 10:01:00',
+                        'ZERO_VOLUME_FILLER', 1.1001, 1.1003
+                    )
+                    """
+                )
+                connection.commit()
+
+                rows = list(
+                    train_research.iter_source_grid(
+                        connection,
+                        "EUR/USD",
+                        start,
+                        start + timedelta(minutes=2),
+                    )
+                )
+            finally:
+                connection.close()
+
+        self.assertEqual(2, len(rows))
+        self.assertTrue(rows[0]["source_observed"])
+        self.assertFalse(rows[1]["source_observed"])
+        self.assertEqual("ZERO_VOLUME_FILLER", rows[1]["quality_status"])
+        self.assertAlmostEqual(1.1002, rows[1]["mid"]["open"])
+
+    def test_buy_execution_uses_ask_entry_and_bid_target(self):
+        start = datetime(2024, 1, 2, 10)
+        path = flat_m1_rows(start, train_research.MAX_TRADE_MINUTES)
+        path[1] = m1_row(
+            start + timedelta(minutes=1),
+            open_price=1.1000,
+            high=1.1017,
+            low=1.0998,
+            close=1.1010,
+        )
+
+        with patch.object(
+            train_research,
+            "load_grid_window",
+            return_value=path,
+        ):
+            result = train_research.execute_trade_m1(
+                connection=None,
+                symbol="EUR/USD",
+                event=self.trade_event(start),
+            )
+
+        self.assertEqual("TAKE_PROFIT", result["reason"])
+        self.assertEqual(1.5, result["r"])
+        self.assertAlmostEqual(1.10005, result["entry_price"])
+        self.assertEqual("bid", result["execution_side"])
+        self.assertAlmostEqual(1.0, result["entry_spread_pips"])
+
+    def test_sell_execution_uses_bid_entry_and_ask_target(self):
+        start = datetime(2024, 1, 2, 10)
+        path = flat_m1_rows(start, train_research.MAX_TRADE_MINUTES)
+        path[1] = m1_row(
+            start + timedelta(minutes=1),
+            open_price=1.1000,
+            high=1.1002,
+            low=1.0983,
+            close=1.0990,
+        )
+
+        with patch.object(
+            train_research,
+            "load_grid_window",
+            return_value=path,
+        ):
+            result = train_research.execute_trade_m1(
+                connection=None,
+                symbol="EUR/USD",
+                event=self.trade_event(start, direction="SELL"),
+            )
+
+        self.assertEqual("TAKE_PROFIT", result["reason"])
+        self.assertEqual(1.5, result["r"])
+        self.assertAlmostEqual(1.09995, result["entry_price"])
+        self.assertEqual("ask", result["execution_side"])
+
+    def test_ambiguous_m1_execution_is_worst_case_stop(self):
+        start = datetime(2024, 1, 2, 10)
+        path = flat_m1_rows(start, train_research.MAX_TRADE_MINUTES)
+        path[1] = m1_row(
+            start + timedelta(minutes=1),
+            open_price=1.1000,
+            high=1.1017,
+            low=1.0989,
+            close=1.1000,
+        )
+
+        with patch.object(
+            train_research,
+            "load_grid_window",
+            return_value=path,
+        ):
+            result = train_research.execute_trade_m1(
+                connection=None,
+                symbol="EUR/USD",
+                event=self.trade_event(start),
+            )
+
+        self.assertEqual("AMBIGUOUS_M1_WORST_SL", result["reason"])
+        self.assertEqual(-1.0, result["r"])
+
+    def test_stop_gap_uses_worse_open_instead_of_capping_loss(self):
+        start = datetime(2024, 1, 2, 10)
+        path = flat_m1_rows(start, train_research.MAX_TRADE_MINUTES)
+        path[1] = m1_row(
+            start + timedelta(minutes=1),
+            open_price=1.0988,
+            high=1.0990,
+            low=1.0985,
+            close=1.0987,
+        )
+
+        with patch.object(
+            train_research,
+            "load_grid_window",
+            return_value=path,
+        ):
+            result = train_research.execute_trade_m1(
+                connection=None,
+                symbol="EUR/USD",
+                event=self.trade_event(start),
+            )
+
+        self.assertEqual("STOP_GAP", result["reason"])
+        self.assertLess(result["r"], -1.0)
+        self.assertAlmostEqual(1.09875, result["exit_price"])
+
+    def test_timeout_contains_real_bid_ask_spread(self):
+        start = datetime(2024, 1, 2, 10)
+        path = flat_m1_rows(start, train_research.MAX_TRADE_MINUTES)
+
+        with patch.object(
+            train_research,
+            "load_grid_window",
+            return_value=path,
+        ):
+            result = train_research.execute_trade_m1(
+                connection=None,
+                symbol="EUR/USD",
+                event=self.trade_event(start),
+            )
+
+        self.assertEqual("TIMEOUT", result["reason"])
+        self.assertAlmostEqual(-0.1, result["r"])
+
+    def test_filler_at_timeout_without_later_quote_stays_unresolved(self):
+        start = datetime(2024, 1, 2, 10)
+        path = flat_m1_rows(start, train_research.MAX_TRADE_MINUTES)
+        path[-1]["source_observed"] = False
+
+        with patch.object(
+            train_research,
+            "load_grid_window",
+            return_value=path,
+        ), patch.object(
+            train_research,
+            "load_first_observed_quote",
+            return_value=None,
+        ):
+            result = train_research.execute_trade_m1(
+                connection=None,
+                symbol="EUR/USD",
+                event=self.trade_event(start),
+            )
+
+        self.assertEqual(
+            "NO_TIMEOUT_QUOTE_BEFORE_BOUNDARY",
+            result["reason"],
+        )
+        self.assertIsNone(result["r"])
+        self.assertEqual(
+            start + timedelta(minutes=178),
+            result["last_observed_quote_time"],
+        )
+
+    def test_filler_at_timeout_exits_at_first_later_observed_quote(self):
+        start = datetime(2024, 1, 2, 10)
+        path = flat_m1_rows(start, train_research.MAX_TRADE_MINUTES)
+        path[-1]["source_observed"] = False
+        delayed = m1_row(
+            start + timedelta(minutes=182),
+            open_price=1.1002,
+            high=1.1003,
+            low=1.1001,
+            close=1.1002,
+        )
+
+        with patch.object(
+            train_research,
+            "load_grid_window",
+            return_value=path,
+        ), patch.object(
+            train_research,
+            "load_first_observed_quote",
+            return_value=delayed,
+        ):
+            result = train_research.execute_trade_m1(
+                connection=None,
+                symbol="EUR/USD",
+                event=self.trade_event(start),
+            )
+
+        self.assertEqual("TIMEOUT_DELAYED_TO_NEXT_QUOTE", result["reason"])
+        self.assertEqual(delayed["timestamp"], result["exit_time"])
+        self.assertAlmostEqual(delayed["bid"]["open"], result["exit_price"])
+
+    def test_filler_at_entry_cannot_be_treated_as_fill(self):
+        start = datetime(2024, 1, 2, 10)
+        path = flat_m1_rows(start, train_research.MAX_TRADE_MINUTES)
+        path[0]["source_observed"] = False
+
+        with patch.object(
+            train_research,
+            "load_grid_window",
+            return_value=path,
+        ):
+            result = train_research.execute_trade_m1(
+                connection=None,
+                symbol="EUR/USD",
+                event=self.trade_event(start),
+            )
+
+        self.assertEqual("NO_ENTRY_QUOTE", result["reason"])
+        self.assertIsNone(result["r"])
+
+    def test_incomplete_execution_path_is_rejected(self):
+        start = datetime(2024, 1, 2, 10)
+        path = flat_m1_rows(start, train_research.MAX_TRADE_MINUTES)
+        del path[20]
+
+        with patch.object(
+            train_research,
+            "load_grid_window",
+            return_value=path,
+        ):
+            result = train_research.execute_trade_m1(
+                connection=None,
+                symbol="EUR/USD",
+                event=self.trade_event(start),
+            )
+
+        self.assertEqual("DATA_GAP", result["reason"])
+
+    def test_train_boundary_fires_before_m1_lookup(self):
+        start = datetime(2024, 12, 31, 21)
+
+        with patch.object(
+            train_research,
+            "load_grid_window",
+        ) as mocked_load:
+            result = train_research.execute_trade_m1(
+                connection=None,
+                symbol="EUR/USD",
+                event=self.trade_event(start),
+            )
+
+        self.assertEqual("BOUNDARY_GUARD", result["reason"])
+        mocked_load.assert_not_called()
+
+    def test_setup_families_keep_independent_open_trade_state(self):
+        start = datetime(2024, 1, 2, 10)
+        breakout_events = [
+            self.trade_event(start),
+            self.trade_event(start + timedelta(minutes=30)),
+        ]
+        fakeout_events = [
+            {
+                **self.trade_event(start),
+                "setup": strategy.SETUP_FAKEOUT,
+            },
+            {
+                **self.trade_event(start + timedelta(minutes=30)),
+                "setup": strategy.SETUP_FAKEOUT,
+            },
+        ]
+        scan = {
+            strategy.SETUP_BREAKOUT_RETEST: breakout_events,
+            strategy.SETUP_FAKEOUT: fakeout_events,
+            "diagnostics": {
+                strategy.SETUP_BREAKOUT_RETEST: {},
+                strategy.SETUP_FAKEOUT: {},
+            },
+        }
+
+        def completed_trade(*, event, **_kwargs):
+            return {
+                "reason": "TIMEOUT",
+                "r": 0.0,
+                "exit_time": event["signal_time"] + timedelta(minutes=60),
+            }
+
+        with patch.object(
+            train_research,
+            "SYMBOLS",
+            ("EUR/USD",),
+        ), patch.object(
+            train_research,
+            "load_verified_m30",
+            return_value=([], Counter()),
+        ), patch.object(
+            train_research.research_data,
+            "m30_strategy_rows",
+            return_value=[],
+        ), patch.object(
+            train_research,
+            "generate_v4_events",
+            return_value=scan,
+        ), patch.object(
+            train_research,
+            "execute_trade_m1",
+            side_effect=completed_trade,
+        ) as mocked_execute:
+            records, raw_events, diagnostics, _quality = (
+                train_research.build_records(connection=None)
+            )
+
+        self.assertEqual(4, len(raw_events))
+        self.assertEqual(2, len(records))
+        self.assertEqual(2, mocked_execute.call_count)
+        self.assertEqual(
+            1,
+            diagnostics["EUR/USD"][strategy.SETUP_BREAKOUT_RETEST][
+                "SKIP_OPEN_TRADE"
+            ],
+        )
+        self.assertEqual(
+            1,
+            diagnostics["EUR/USD"][strategy.SETUP_FAKEOUT][
+                "SKIP_OPEN_TRADE"
+            ],
+        )
+
+    def test_unresolved_filled_trade_blocks_later_same_family_events(self):
+        start = datetime(2024, 1, 2, 10)
+        scan = {
+            strategy.SETUP_BREAKOUT_RETEST: [
+                self.trade_event(start),
+                self.trade_event(start + timedelta(days=1)),
+            ],
+            strategy.SETUP_FAKEOUT: [],
+            "diagnostics": {
+                strategy.SETUP_BREAKOUT_RETEST: {},
+                strategy.SETUP_FAKEOUT: {},
+            },
+        }
+        unresolved = {
+            "reason": "NO_TIMEOUT_QUOTE_BEFORE_BOUNDARY",
+            "r": None,
+            "entry_time": start,
+            "exit_time": None,
+        }
+
+        with patch.object(
+            train_research,
+            "SYMBOLS",
+            ("EUR/USD",),
+        ), patch.object(
+            train_research,
+            "load_verified_m30",
+            return_value=([], Counter()),
+        ), patch.object(
+            train_research.research_data,
+            "m30_strategy_rows",
+            return_value=[],
+        ), patch.object(
+            train_research,
+            "generate_v4_events",
+            return_value=scan,
+        ), patch.object(
+            train_research,
+            "execute_trade_m1",
+            return_value=unresolved,
+        ) as mocked_execute:
+            records, _raw_events, diagnostics, _quality = (
+                train_research.build_records(connection=None)
+            )
+
+        self.assertEqual(1, len(records))
+        self.assertEqual(1, mocked_execute.call_count)
+        self.assertEqual(
+            1,
+            diagnostics["EUR/USD"][strategy.SETUP_BREAKOUT_RETEST][
+                "UNRESOLVED_OPEN_TRADE_TO_BOUNDARY"
+            ],
+        )
+        self.assertEqual(
+            1,
+            diagnostics["EUR/USD"][strategy.SETUP_BREAKOUT_RETEST][
+                "SKIP_OPEN_TRADE"
+            ],
+        )
 
 
 class EventAnatomyTests(unittest.TestCase):

@@ -685,6 +685,58 @@ def validate_database(connection, expected_keys):
         if orphaned:
             raise RuntimeError(f"Orphaned rows in {table}: {orphaned}")
 
+    overlap = connection.execute(
+        """
+        SELECT COUNT(*)
+        FROM m1_bars AS bars
+        INNER JOIN m1_gaps AS gaps
+          ON gaps.symbol = bars.symbol AND gaps.datetime = bars.datetime
+        """
+    ).fetchone()[0]
+    if overlap:
+        raise RuntimeError(f"Observed/filler M1 overlap: {overlap}")
+
+    for table in ("m1_bars", "m1_gaps"):
+        misaligned = connection.execute(
+            f"""
+            SELECT COUNT(*) FROM {table}
+            WHERE length(datetime) != 19 OR substr(datetime, 18, 2) != '00'
+            """
+        ).fetchone()[0]
+        if misaligned:
+            raise RuntimeError(f"Unaligned timestamps in {table}: {misaligned}")
+
+    invalid_artifact_sides = connection.execute(
+        """
+        SELECT COUNT(*) FROM daily_artifacts
+        WHERE side NOT IN ('bid', 'ask')
+        """
+    ).fetchone()[0]
+    if invalid_artifact_sides:
+        raise RuntimeError(
+            f"Invalid daily artifact sides: {invalid_artifact_sides}"
+        )
+
+    invalid_bar_quality = connection.execute(
+        """
+        SELECT COUNT(*) FROM m1_bars
+        WHERE quality_status NOT IN (
+            'OBSERVED', 'OBSERVED_ZERO_VOLUME_PRICE_CHANGE'
+        )
+        """
+    ).fetchone()[0]
+    invalid_gap_quality = connection.execute(
+        """
+        SELECT COUNT(*) FROM m1_gaps
+        WHERE reason != 'ZERO_VOLUME_FILLER'
+        """
+    ).fetchone()[0]
+    if invalid_bar_quality or invalid_gap_quality:
+        raise RuntimeError(
+            "Invalid normalized quality labels: "
+            f"bars={invalid_bar_quality} gaps={invalid_gap_quality}"
+        )
+
     for path_text, expected_hash, expected_bytes in connection.execute(
         "SELECT path, sha256, bytes FROM daily_artifacts ORDER BY path"
     ):

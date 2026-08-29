@@ -685,6 +685,68 @@ def aggregate_m1_to_m30(rows):
     return result
 
 
+def aggregate_verified_grid_to_m30(rows):
+    """Aggregate an audited daily M1 grid without inventing quote updates.
+
+    Rows marked ``source_observed=False`` prove that the daily source grid is
+    complete, but their flat provider prices are not treated as market quote
+    updates.  M30 OHLC therefore uses observed BID/ASK M1 rows only.  A fully
+    silent M30 bucket is retained as unusable so the strategy scanner sees a
+    real market-closure gap rather than a fabricated flat candle.
+    """
+    validate_m1_rows(rows)
+    grouped = OrderedDict()
+    for row in rows:
+        bucket = floor_m30(row["timestamp"])
+        grouped.setdefault(bucket, []).append(row)
+
+    result = []
+    for bucket, bucket_rows in grouped.items():
+        expected = [bucket + timedelta(minutes=index) for index in range(30)]
+        source_times = [parse_utc(row["timestamp"]) for row in bucket_rows]
+        source_complete = source_times == expected
+        observed = [
+            row
+            for row in bucket_rows
+            if bool(row.get("source_observed", True))
+        ]
+        filler_count = len(bucket_rows) - len(observed)
+
+        if not source_complete:
+            quality_status = "MISSING_SOURCE_GRID"
+        elif not observed:
+            quality_status = "NO_OBSERVED_QUOTES"
+        else:
+            quality_status = "USABLE"
+
+        row = {
+            "timestamp": bucket,
+            "source_grid_rows": len(bucket_rows),
+            "observed_m1_rows": len(observed),
+            "filler_m1_rows": filler_count,
+            "source_complete": source_complete,
+            "quality_status": quality_status,
+            "aggregation_policy": "VERIFIED_DAILY_GRID_OBSERVED_QUOTES_ONLY",
+        }
+        if observed:
+            row.update(
+                {
+                    "bid": _aggregate_side(observed, "bid"),
+                    "ask": _aggregate_side(observed, "ask"),
+                    "mid": _aggregate_side(observed, "mid"),
+                    "first_observed_m1_time": parse_utc(
+                        observed[0]["timestamp"]
+                    ),
+                    "last_observed_m1_time": parse_utc(
+                        observed[-1]["timestamp"]
+                    ),
+                }
+            )
+            _validate_sides(row, f"verified-grid M30 {bucket}")
+        result.append(row)
+    return result
+
+
 def m30_strategy_rows(rows, *, side="mid"):
     """Convert only usable canonical M30 bars to the existing scanner schema."""
     if side not in SIDES:
