@@ -1,4 +1,4 @@
-cat > /app/v4_param_sweep.py << 'PYEOF'
+cat > /app/v4_param_sweep.py << 
 """Read-only parameter sweep over MAX_TRADE_MINUTES x TAKE_PROFIT_R_MULTIPLE.
 
 Runs entirely on the already-downloaded, hash-verified TRAIN database
@@ -67,4 +67,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-PYEOF
