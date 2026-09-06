@@ -1,12 +1,25 @@
 """Standalone VALIDATION-2025 Dukascopy M1 builder.
 
-Completely isolated from the existing TRAIN builder and TRAIN database.
-Reuses only the generic, date-range-agnostic download/materialization
-helpers from v4_dukascopy_train_builder.py. Deliberately does NOT call
-research_days()/run_builder() from that module -- those carry a hard-coded
-assertion locking them to the TRAIN boundary. Drives its own day loop for
-2025-01-01..2025-12-31 (VALIDATION year) with a small Dec-2024 warm-up
-buffer. The TRAIN raw cache and TRAIN database are never opened.
+Completely isolated from the existing TRAIN builder and TRAIN database:
+  - separate output directory  (/tmp/v4_dukascopy_validation)
+  - separate database file     (v4_validation_m1.sqlite3)
+  - separate manifest and lock file
+
+It reuses only the generic, date-range-agnostic download/materialization
+helpers from v4_dukascopy_train_builder.py (fetch_or_read_side,
+materialize_day, record_saturday, validate_daily_grid, open_database,
+validate_database, write_checkpoint, progress_summary, acquire_run_lock).
+
+It deliberately does NOT call v4_dukascopy_train_builder.research_days() or
+.run_builder() -- those two functions carry a hard-coded assertion that
+locks them to the exact TRAIN boundary (2021-01-01 .. 2025-01-01) and will
+raise RuntimeError("... locked 2025 boundary") if repurposed. That guard is
+intentional and is left untouched. This script drives its own day loop
+instead, covering 2025-01-01 through 2025-12-31 only (the VALIDATION year
+defined in v4_event_strategy.py), with a small December-2024 warm-up buffer
+identical in spirit to the TRAIN builder's own December-2020 buffer.
+
+The already-downloaded TRAIN raw cache and TRAIN database are never opened.
 """
 
 import time
@@ -120,12 +133,11 @@ def run_validation_builder():
                           f"{expected_days} | M1={summary['observed_m1_rows']} | "
                           f"ManifestSHA={digest}", flush=True)
 
-            outside_rows = connection.execute(
-                "SELECT COUNT(*) FROM m1_bars WHERE datetime < '2025-01-01 00:00:00' "
-                "OR datetime >= '2026-01-01 00:00:00'"
+            after_holdout_rows = connection.execute(
+                "SELECT COUNT(*) FROM m1_bars WHERE datetime >= '2026-01-01 00:00:00'"
             ).fetchone()[0]
-            if outside_rows:
-                raise RuntimeError(f"VALIDATION rows outside the 2025 window: {outside_rows}")
+            if after_holdout_rows:
+                raise RuntimeError(f"VALIDATION rows leaked past 2026 HOLDOUT boundary: {after_holdout_rows}")
             integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
             if integrity != "ok":
                 raise RuntimeError(f"Validation database integrity failure: {integrity}")
