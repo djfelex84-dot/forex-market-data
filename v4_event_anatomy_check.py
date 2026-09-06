@@ -1,4 +1,4 @@
-"""Read-only price-path anatomy check for FAKEOUT events on TRAIN only."""
+"""Read-only price-path anatomy check, TRAIN only, memory-light."""
 
 from datetime import timedelta
 
@@ -6,6 +6,7 @@ import v4_event_anatomy as anatomy
 import v4_research_data as research_data
 import v4_train_event_research as ter
 from v4_event_strategy import (
+    SETUP_BREAKOUT_RETEST,
     SETUP_FAKEOUT,
     TRAIN_END,
     TRAIN_START,
@@ -14,6 +15,7 @@ from v4_event_strategy import (
 
 HORIZONS = anatomy.HORIZONS_MINUTES  # (30, 60, 120, 180)
 MAX_HORIZON = max(HORIZONS)
+SETUP = SETUP_BREAKOUT_RETEST
 
 
 def build_fakeout_anatomy(connection, symbol):
@@ -22,7 +24,7 @@ def build_fakeout_anatomy(connection, symbol):
     scan = generate_v4_events(strategy_rows)
 
     records = []
-    for event in scan[SETUP_FAKEOUT]:
+    for event in scan[SETUP]:
         signal_time = research_data.parse_utc(event["signal_time"])
         if not TRAIN_START <= signal_time < TRAIN_END:
             continue
@@ -55,7 +57,7 @@ def main():
             fakeout_records.extend(build_fakeout_anatomy(connection, symbol))
 
         print("=" * 100)
-        print("V4 EVENT ANATOMY | FAKEOUT | TRAIN ONLY | NO TP/SL/SPREAD ASSUMPTIONS")
+        print(f"V4 EVENT ANATOMY | {SETUP} | TRAIN ONLY | NO TP/SL/SPREAD ASSUMPTIONS")
         print("=" * 100)
 
         for horizon in HORIZONS:
