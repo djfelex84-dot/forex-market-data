@@ -1,38 +1,58 @@
 """Read-only price-path anatomy check for FAKEOUT events on TRAIN only."""
 
-import v4_dukascopy_train_builder as train_builder
-import v4_event_anatomy as anatomy
-import v4_train_event_research as ter
-from v4_event_strategy import SETUP_FAKEOUT
+from datetime import timedelta
 
-HORIZONS = (30, 60, 120, 180)
+import v4_event_anatomy as anatomy
+import v4_research_data as research_data
+import v4_train_event_research as ter
+from v4_event_strategy import (
+    SETUP_FAKEOUT,
+    TRAIN_END,
+    TRAIN_START,
+    generate_v4_events,
+)
+
+HORIZONS = anatomy.HORIZONS_MINUTES  # (30, 60, 120, 180)
+MAX_HORIZON = max(HORIZONS)
+
+
+def build_fakeout_anatomy(connection, symbol):
+    m30_rows, _quality = ter.load_verified_m30(connection, symbol)
+    strategy_rows = research_data.m30_strategy_rows(m30_rows, side="mid")
+    scan = generate_v4_events(strategy_rows)
+
+    records = []
+    for event in scan[SETUP_FAKEOUT]:
+        signal_time = research_data.parse_utc(event["signal_time"])
+        if not TRAIN_START <= signal_time < TRAIN_END:
+            continue
+
+        window_end = signal_time + timedelta(minutes=MAX_HORIZON)
+        if window_end > TRAIN_END:
+            m1_index = {}
+        else:
+            window_rows = ter.iter_source_grid(
+                connection, symbol, signal_time, window_end
+            )
+            m1_index = anatomy.index_m1(list(window_rows))
+
+        record = anatomy.analyze_event(
+            symbol=symbol,
+            event=event,
+            m1_index=m1_index,
+            split_end=TRAIN_END,
+            horizons=HORIZONS,
+        )
+        records.append(record)
+    return records
 
 
 def main():
     connection, _manifest = ter.open_complete_train_database()
     try:
-        all_records = []
+        fakeout_records = []
         for symbol in ter.SYMBOLS:
-            m30_rows, _quality = ter.load_verified_m30(connection, symbol)
-            m1_rows = list(
-                ter.iter_source_grid(
-                    connection,
-                    symbol,
-                    train_builder.CONTEXT_START,
-                    ter.TRAIN_END,
-                )
-            )
-            records, _diagnostics = anatomy.build_event_anatomy(
-                symbol=symbol,
-                m30_rows=m30_rows,
-                m1_rows=m1_rows,
-                unlock_validation=False,
-            )
-            all_records.extend(records)
-
-        fakeout_records = [
-            row for row in all_records if row["setup"] == SETUP_FAKEOUT
-        ]
+            fakeout_records.extend(build_fakeout_anatomy(connection, symbol))
 
         print("=" * 100)
         print("V4 EVENT ANATOMY | FAKEOUT | TRAIN ONLY | NO TP/SL/SPREAD ASSUMPTIONS")
