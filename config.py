@@ -139,3 +139,36 @@ ASSUMED_SPREAD_PIPS = (
         "assumed_spread_pips"
     ]
 )
+
+
+# =========================
+# CRYPTO SIGNALS (daily trend)
+# =========================
+#
+# Validated in V7 research:
+# V7_CRYPTO_GOLD_RESULT.md
+#
+# Twelve Data crypto symbols.
+
+CRYPTO_ASSETS = (
+    "BTC/USD",
+    "ETH/USD",
+    "XRP/USD",
+    "BNB/USD",
+    "LTC/USD",
+    "ADA/USD",
+    "DOGE/USD",
+)
+
+# Buy on a daily close above the
+# highest close of the previous
+# CRYPTO_ENTRY_DAYS days.
+CRYPTO_ENTRY_DAYS = 20
+
+# Exit on a daily close below the
+# lowest close of the previous
+# CRYPTO_EXIT_DAYS days.
+CRYPTO_EXIT_DAYS = 10
+
+# Exchange fee + spread, one side.
+CRYPTO_COST_PER_SIDE = 0.001
