@@ -449,22 +449,79 @@ def process_symbol(symbol, day):
     return action, rows
 
 
+def board_row_value(status, close, entry_level, entry_price):
+    """One number per coin: % gain if in a trade, % still needed to break out if not."""
+    if status == "LONG":
+        return (close / entry_price - 1) * 100 if entry_price else 0.0
+    return (close / entry_level - 1) * 100
+
+
 def build_board_text(day, board):
+    in_trade = [b for b in board if b[1] == "LONG"]
+    waiting = [b for b in board if b[1] != "LONG"]
+    best = max(in_trade, key=lambda b: board_row_value(b[1], b[2], b[3], b[5]), default=None)
     lines = [f"📋 <b>CRYPTO TREND BOARD · {day}</b>", ""]
-    for symbol, status, close, entry_level, exit_level, entry_price in board:
-        if status == "LONG":
-            change = (close / entry_price - 1) * 100 if entry_price else 0
-            lines.append(
-                f"🟢 <b>{symbol}</b> in trade · {change:+.1f}% · exit below {fmt_price(exit_level)}"
-            )
-        else:
-            gap = (entry_level / close - 1) * 100
-            lines.append(
-                f"⚪ <b>{symbol}</b> waiting · buy above {fmt_price(entry_level)} ({gap:+.1f}%)"
-            )
-    lines += ["", f"<i>Rules: buy on a close above the {CRYPTO_ENTRY_DAYS}-day high, "
-                  f"exit on a close below the {CRYPTO_EXIT_DAYS}-day low.</i>", "", BRAND]
+    lines.append(f"🟢 In a trade: <b>{len(in_trade)}</b>   ⚪ Waiting for a breakout: <b>{len(waiting)}</b>")
+    if best:
+        symbol, status, close, entry_level, exit_level, entry_price = best
+        change = board_row_value(status, close, entry_level, entry_price)
+        lines.append(f"🏆 Best open trade: <b>{symbol}</b> {change:+.1f}%")
+    lines += ["", "See the chart for every coin at a glance.", "",
+              f"<i>Rules: buy on a close above the {CRYPTO_ENTRY_DAYS}-day high, "
+              f"exit on a close below the {CRYPTO_EXIT_DAYS}-day low.</i>", "", BRAND]
     return "\n".join(lines)
+
+
+def create_board_chart(day, board):
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return None
+    rows = []
+    for symbol, status, close, entry_level, exit_level, entry_price in board:
+        value = board_row_value(status, close, entry_level, entry_price)
+        rows.append((symbol.replace("/USD", ""), status, value))
+    rows.sort(key=lambda r: r[2], reverse=True)
+    names = [r[0] for r in rows]
+    values = [r[2] for r in rows]
+    colors = []
+    for _, status, value in rows:
+        if status != "LONG":
+            colors.append("#475569")
+        else:
+            colors.append("#22c55e" if value >= 0 else "#ef4444")
+
+    fig, ax = plt.subplots(figsize=(8.5, 0.55 * len(rows) + 1.2), dpi=120)
+    fig.patch.set_facecolor("#0f172a")
+    ax.set_facecolor("#0f172a")
+    bars = ax.barh(names, values, color=colors, height=0.6, zorder=3)
+    ax.axvline(0, color="#475569", linewidth=1)
+    span = max(abs(v) for v in values) if values else 1
+    span = max(span, 0.5)
+    pad = span * 0.10
+    for bar, (_, status, value) in zip(bars, rows):
+        label = f"{value:+.1f}%" if status == "LONG" else f"{value:+.1f}% to buy"
+        x = bar.get_width()
+        align = "left" if x >= 0 else "right"
+        offset = pad if x >= 0 else -pad
+        ax.text(x + offset, bar.get_y() + bar.get_height() / 2, label,
+                va="center", ha=align, color="#e2e8f0", fontsize=9)
+    ax.set_xlim(-span * 1.45, span * 1.45)
+    ax.set_title(f"Crypto Trend Board · {day}", color="#f8fafc", fontsize=13, loc="left")
+    ax.tick_params(colors="#cbd5e1", labelsize=10, left=False, length=0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.set_xticks([])
+    ax.grid(axis="x", color="#1e293b", zorder=0)
+    ax.invert_yaxis()
+    fig.tight_layout()
+    buffer = io.BytesIO()
+    fig.savefig(buffer, format="png", bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    buffer.seek(0)
+    return buffer
 
 
 def process_crypto_signals():
@@ -537,7 +594,8 @@ def send_daily_board(day):
             board.append((symbol, position["status"], row["close"], row["next_entry_level"],
                           row["next_exit_level"], position["entry_price"]))
     if board:
-        send_text(VIP_CHANNEL_ID, build_board_text(day, board))
+        chart = create_board_chart(day, board)
+        send_photo(VIP_CHANNEL_ID, build_board_text(day, board), chart)
 
 
 # =========================
