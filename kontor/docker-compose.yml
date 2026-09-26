@@ -1,0 +1,11 @@
+services:
+  kontor:
+    build: .
+    container_name: kontor
+    restart: unless-stopped
+    env_file: .env
+    # Only reachable from the server itself; nginx (or Caddy) in front provides https.
+    ports:
+      - "127.0.0.1:3080:3000"
+    volumes:
+      - ./data:/data

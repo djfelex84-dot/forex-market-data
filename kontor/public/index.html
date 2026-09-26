@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="et">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Kontor</title>
+<meta name="theme-color" content="#0E6B5A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Kontor">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="is-login">
+<header class="top">
+  <div class="bar">
+    <div class="brand">Kontor <small id="coName"></small></div>
+    <div class="sp"></div>
+    <div class="month">
+      <button id="mPrev" aria-label="‹">‹</button>
+      <span id="mLabel"></span>
+      <button id="mNext" aria-label="›">›</button>
+    </div>
+    <div id="hdrLang"></div>
+  </div>
+  <nav class="tabs" id="tabs"></nav>
+</header>
+<main id="main"></main>
+<div class="fab" id="fab"></div>
+<div id="sheetRoot"></div>
+<div id="toastRoot"></div>
+<script src="/i18n.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

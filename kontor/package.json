@@ -1,0 +1,15 @@
+{
+  "name": "kontor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Stock, invoices, bank and VAT bookkeeping for small Estonian companies",
+  "type": "module",
+  "main": "server.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --no-warnings server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0"
+  }
+}
